@@ -349,7 +349,7 @@ class TkinterGameOfLifeGUI:
             self.running = False
 
             # Resize grid if this is a found pattern with specific grid requirements
-            if hasattr(pattern, "grid_info") and pattern.grid_info:
+            if hasattr(pattern, "simulation_params") and pattern.simulation_params:
                 self._resize_grid_for_pattern(pattern)
 
             # Center the pattern on the grid
@@ -639,22 +639,10 @@ class TkinterGameOfLifeGUI:
                     )
                     
                     # Store simulation parameters for grid resizing
-                    if "simulation_parameters" in data:
-                        pattern.simulation_params = data["simulation_parameters"]
-                        pattern.grid_info = {
-                            "width": pattern.simulation_params.get("width"),
-                            "height": pattern.simulation_params.get("height"),
-                            "wrap_edges": pattern.simulation_params.get(
-                                "wrap_edges", pattern.simulation_params.get("toroidal", True)
-                            ),
-                        }
-                    else:
-                        # Legacy format
-                        pattern.grid_info = data.get("grid_info", {})
+                    pattern.simulation_params = data["simulation_parameters"]
                     
                     # Resize grid if needed
-                    if hasattr(pattern, "grid_info") and pattern.grid_info:
-                        self._resize_grid_for_pattern(pattern)
+                    self._resize_grid_for_pattern(pattern)
                     
                     # Apply pattern to grid
                     pattern_normalized = pattern.normalize()
@@ -804,19 +792,12 @@ class TkinterGameOfLifeGUI:
     def _resize_grid_for_pattern(self, pattern) -> None:
         """Resize the grid to match a pattern's original simulation parameters if needed."""
         if not hasattr(pattern, "simulation_params") or not pattern.simulation_params:
-            # Fallback to legacy grid_info
-            if not hasattr(pattern, "grid_info") or not pattern.grid_info:
-                return
-            grid_info = pattern.grid_info
-            new_width = grid_info.get("width", self.cols)
-            new_height = grid_info.get("height", self.rows)
-            new_toroidal = grid_info.get("wrap_edges", True)
-        else:
-            # Use full simulation parameters
-            sim_params = pattern.simulation_params
-            new_width = sim_params.get("width", self.cols)
-            new_height = sim_params.get("height", self.rows)
-            new_toroidal = sim_params.get("toroidal", sim_params.get("wrap_edges", True))
+            return
+            
+        sim_params = pattern.simulation_params
+        new_width = sim_params.get("width", self.cols)
+        new_height = sim_params.get("height", self.rows)
+        new_toroidal = sim_params.get("toroidal", True)
 
         # Only resize if different from current grid
         if new_width != self.cols or new_height != self.rows or new_toroidal != self.grid.wrap_edges:

@@ -321,10 +321,9 @@ class CLIGameOfLife:
                     "width": width,
                     "height": height,
                     "toroidal": toroidal,
-                    "wrap_edges": grid.wrap_edges,  # Keep for backward compatibility
                     "population_rate": population_rate,
                     "max_generations": max_generations,
-                    "pattern": pattern,  # This is the pattern name parameter
+                    "pattern": pattern,
                     "pattern_x": pattern_x,
                     "pattern_y": pattern_y,
                     "seed": seed,
@@ -496,19 +495,7 @@ class CLIGameOfLife:
                             )
 
                             # Store simulation parameters for recreation
-                            # Support both new format (simulation_parameters) and old format (grid_info)
-                            if "simulation_parameters" in saved_data:
-                                pattern.simulation_params = saved_data["simulation_parameters"]
-                            else:
-                                # Legacy format
-                                grid_info = saved_data.get("grid_info", {})
-                                pattern.simulation_params = {
-                                    "width": grid_info.get("width"),
-                                    "height": grid_info.get("height"),
-                                    "toroidal": grid_info.get("wrap_edges", True),
-                                    "population_rate": 0.1,  # Default for legacy patterns
-                                    "max_generations": 10000,  # Default for legacy patterns
-                                }
+                            pattern.simulation_params = saved_data["simulation_parameters"]
 
                             # Add to pattern library
                             self.pattern_library.add_pattern(pattern)

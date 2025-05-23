@@ -38,6 +38,7 @@ dev = [
 
 [project.scripts]
 cellular-tkinter = "cellular.frontends.tkinter_gui:main"
+cellular-cli = "cellular.frontends.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

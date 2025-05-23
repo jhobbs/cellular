@@ -21,6 +21,8 @@ pip install -e ".[dev]"
 
 - **Tkinter GUI**: `cellular-tkinter` or `python -m cellular.frontends.tkinter_gui`
 - **Test mode**: `cellular-tkinter --test` (runs for 3 seconds and auto-exits)
+- **Command Line**: `cellular-cli` or `python -m cellular.frontends.cli`
+- **CLI with pattern**: `cellular-cli --pattern Glider --toroidal --verbose`
 
 ## Testing and Quality Assurance
 
@@ -43,7 +45,8 @@ pip install -e ".[dev]"
 ### Frontend Interfaces (`src/cellular/frontends/`)
 
 - **`tkinter_gui.py`**: Full-featured Tkinter GUI with pattern selection, statistics, and speed mode
-- Future frontends can be added here (web, CLI, etc.)
+- **`cli.py`**: Command-line interface with argparse for batch simulations and scripting
+- Future frontends can be added here (web, etc.)
 
 ### Key Design Patterns
 

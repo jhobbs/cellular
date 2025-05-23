@@ -88,6 +88,9 @@ class TestTkinterGameOfLifeGUI:
 
     def test_toggle_cell_at_position(self, gui):
         """Test cell toggling via mouse interaction."""
+        # Clear grid first to ensure known state
+        gui.grid.clear()
+
         # Calculate canvas position for grid cell (5, 5)
         canvas_x = 5 * gui.cell_size + gui.cell_size // 2
         canvas_y = 5 * gui.cell_size + gui.cell_size // 2

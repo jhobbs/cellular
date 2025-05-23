@@ -55,6 +55,25 @@ tox -e format
 cellular-tkinter
 ```
 
+### Command Line Interface
+
+```bash
+# Run random simulation
+cellular-cli --width 50 --height 50 --population 0.1
+
+# Run specific pattern
+cellular-cli --pattern Glider --toroidal --verbose
+
+# Run R-pentomino with detailed output
+cellular-cli --pattern "R-pentomino" --width 100 --height 100 --show-grid
+
+# List available patterns
+cellular-cli --list-patterns
+
+# Get help
+cellular-cli --help
+```
+
 ### Programmatic Usage
 
 ```python

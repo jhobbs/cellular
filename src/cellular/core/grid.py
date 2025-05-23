@@ -119,9 +119,7 @@ class Grid:
             ValueError: If grids have different dimensions
         """
         if other.shape != self.shape:
-            raise ValueError(
-                f"Grid dimensions don't match: {other.shape} vs {self.shape}"
-            )
+            raise ValueError(f"Grid dimensions don't match: {other.shape} vs {self.shape}")
 
         self._cells[:] = other._cells
 

@@ -79,9 +79,7 @@ class Pattern:
         min_x, min_y, _, _ = self.get_bounding_box()
         normalized_cells = [(x - min_x, y - min_y) for x, y in self.cells]
 
-        return Pattern(
-            self.name, normalized_cells, self.description, self.metadata.copy()
-        )
+        return Pattern(self.name, normalized_cells, self.description, self.metadata.copy())
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert pattern to dictionary for serialization.
@@ -156,9 +154,7 @@ class PatternLibrary:
     def _load_builtin_patterns(self) -> None:
         """Load built-in common patterns."""
         # Still life patterns
-        self.add_pattern(
-            Pattern("Block", [(0, 0), (0, 1), (1, 0), (1, 1)], "2x2 still life block")
-        )
+        self.add_pattern(Pattern("Block", [(0, 0), (0, 1), (1, 0), (1, 1)], "2x2 still life block"))
 
         self.add_pattern(
             Pattern(
@@ -177,9 +173,7 @@ class PatternLibrary:
         )
 
         # Oscillators
-        self.add_pattern(
-            Pattern("Blinker", [(0, 1), (1, 1), (2, 1)], "Period-2 oscillator")
-        )
+        self.add_pattern(Pattern("Blinker", [(0, 1), (1, 1), (2, 1)], "Period-2 oscillator"))
 
         self.add_pattern(
             Pattern(

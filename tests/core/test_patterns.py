@@ -363,9 +363,7 @@ class TestPatternLibrary:
             grid.set_cell(3, 1, True)
 
             # Save as pattern
-            pattern = library.save_grid_as_pattern(
-                grid, "Grid Pattern", "From grid", "grid_pattern.json"
-            )
+            pattern = library.save_grid_as_pattern(grid, "Grid Pattern", "From grid", "grid_pattern.json")
 
             # Check pattern was created
             assert pattern.name == "Grid Pattern"

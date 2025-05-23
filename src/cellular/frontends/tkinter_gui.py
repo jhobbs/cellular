@@ -37,6 +37,12 @@ class TkinterGameOfLifeGUI:
         self.game = GameOfLife(self.grid)
         self.pattern_library = PatternLibrary()
 
+        # Load found patterns from CLI searches
+        self._load_found_patterns()
+
+        # Override pattern library categorization to include found patterns
+        self._setup_found_patterns_category()
+
         # GUI state
         self.running = False
         self.frame_rate = 30
@@ -142,6 +148,23 @@ class TkinterGameOfLifeGUI:
         )
         self.speed_btn.pack(side=tk.LEFT, padx=3)
 
+        # Toroidal toggle button
+        self.topology_btn = tk.Button(
+            parent,
+            text="Toroidal",
+            command=self.toggle_topology,
+            bg="#228B22",
+            fg="white",
+            font=("Arial", 9),
+        )
+        self.topology_btn.pack(side=tk.LEFT, padx=3)
+        
+        # Set initial button state based on grid topology
+        if self.grid.wrap_edges:
+            self.topology_btn.config(bg="#228B22", text="Toroidal")
+        else:
+            self.topology_btn.config(bg="#666666", text="Bounded")
+
     def _create_canvas(self, parent: tk.Frame) -> None:
         """Create the game canvas."""
         canvas_frame = tk.Frame(parent, bg="#333333")
@@ -231,18 +254,14 @@ class TkinterGameOfLifeGUI:
             textvariable=self.pattern_category_var,
             values=list(self.pattern_library.get_patterns_by_category().keys()),
             state="readonly",
-            width=20,
+            width=25,
         )
         self.pattern_category_combo.pack(pady=2)
-        self.pattern_category_combo.bind(
-            "<<ComboboxSelected>>", self.on_category_selected
-        )
+        self.pattern_category_combo.bind("<<ComboboxSelected>>", self.on_category_selected)
 
         # Pattern selection dropdown
         self.pattern_var = tk.StringVar()
-        self.pattern_combo = ttk.Combobox(
-            parent, textvariable=self.pattern_var, state="readonly", width=20
-        )
+        self.pattern_combo = ttk.Combobox(parent, textvariable=self.pattern_var, state="readonly", width=25)
         self.pattern_combo.pack(pady=2)
 
         # Load pattern button
@@ -275,11 +294,12 @@ class TkinterGameOfLifeGUI:
         self.stats_labels: Dict[str, tk.Label] = {}
         stats = [
             "Running",
-            "Population",
+            "Population", 
             "Rate Change",
             "Generation",
             "Cycle Status",
             "Speed Mode",
+            "Topology",
         ]
 
         for stat in stats:
@@ -328,6 +348,10 @@ class TkinterGameOfLifeGUI:
         if pattern:
             self.running = False
 
+            # Resize grid if this is a found pattern with specific grid requirements
+            if hasattr(pattern, "grid_info") and pattern.grid_info:
+                self._resize_grid_for_pattern(pattern)
+
             # Center the pattern on the grid
             pattern_normalized = pattern.normalize()
             offset_x = (self.cols - pattern_normalized.get_size()[0]) // 2
@@ -358,6 +382,30 @@ class TkinterGameOfLifeGUI:
                 self.running = True
         else:
             self.speed_btn.config(text="Speed Mode", bg="#800080")
+
+    def toggle_topology(self) -> None:
+        """Toggle between toroidal and bounded topology."""
+        # Stop simulation during topology change
+        was_running = self.running
+        self.running = False
+        
+        # Toggle topology
+        self.grid.wrap_edges = not self.grid.wrap_edges
+        
+        # Update button appearance
+        if self.grid.wrap_edges:
+            self.topology_btn.config(bg="#228B22", text="Toroidal")
+        else:
+            self.topology_btn.config(bg="#666666", text="Bounded")
+        
+        # Update window title
+        title = f"Conway's Game of Life - {self.cols}x{self.rows}"
+        if self.grid.wrap_edges:
+            title += " (Toroidal)"
+        self.master.title(title)
+        
+        # Restart simulation if it was running
+        self.running = was_running
 
     def reset_grid(self) -> None:
         """Reset the grid with random population."""
@@ -409,9 +457,7 @@ class TkinterGameOfLifeGUI:
             if cell_key in self.cell_objects:
                 self.canvas.itemconfig(self.cell_objects[cell_key], fill=color)
             else:
-                obj = self.canvas.create_rectangle(
-                    x1, y1, x2, y2, fill=color, outline=""
-                )
+                obj = self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="")
                 self.cell_objects[cell_key] = obj
         else:
             if cell_key in self.cell_objects:
@@ -441,11 +487,7 @@ class TkinterGameOfLifeGUI:
         current_time = self.master.tk.call("clock", "milliseconds")
         self.frame_times.append(current_time)
         if len(self.frame_times) > 1:
-            fps = (
-                1000
-                * (len(self.frame_times) - 1)
-                / (self.frame_times[-1] - self.frame_times[0])
-            )
+            fps = 1000 * (len(self.frame_times) - 1) / (self.frame_times[-1] - self.frame_times[0])
         else:
             fps = 0
 
@@ -453,14 +495,16 @@ class TkinterGameOfLifeGUI:
         cycle_status = "None"
         cycle_color = "#FFFFFF"
         if stats["cycle_detected"]:
-            cycle_status = (
-                f"Cycle {stats['cycle_length']} (gen {stats['cycle_start_generation']})"
-            )
+            cycle_status = f"Cycle {stats['cycle_length']} (gen {stats['cycle_start_generation']})"
             cycle_color = "#FFD700"
 
         # Format speed mode status
         speed_status = "ON" if self.speed_mode else "OFF"
         speed_color = "#FF4500" if self.speed_mode else "#FFFFFF"
+
+        # Format topology status
+        topology_status = "Toroidal" if self.grid.wrap_edges else "Bounded"
+        topology_color = "#90EE90" if self.grid.wrap_edges else "#FFFFFF"
 
         # Update display
         display_stats = {
@@ -470,10 +514,11 @@ class TkinterGameOfLifeGUI:
             "Generation": str(stats["generation"]),
             "Cycle Status": cycle_status,
             "Speed Mode": speed_status,
+            "Topology": topology_status,
             "FPS": f"{fps:.1f}",
         }
 
-        colors = {"Cycle Status": cycle_color, "Speed Mode": speed_color}
+        colors = {"Cycle Status": cycle_color, "Speed Mode": speed_color, "Topology": topology_color}
 
         for stat, value in display_stats.items():
             color = colors.get(stat, "#FFFFFF")
@@ -493,10 +538,7 @@ class TkinterGameOfLifeGUI:
                 self.game.step()
 
                 # Stop if cycle detected or max generations reached
-                if (
-                    self.game.cycle_detected
-                    or self.game.generation >= self.max_generations
-                ):
+                if self.game.cycle_detected or self.game.generation >= self.max_generations:
                     self.speed_mode = False
                     self.speed_btn.config(text="Speed Mode", bg="#800080")
                     self.running = False
@@ -526,9 +568,7 @@ class TkinterGameOfLifeGUI:
     def save_pattern(self) -> None:
         """Save the initial pattern."""
         if self.initial_state is None:
-            messagebox.showwarning(
-                "No Pattern", "No initial pattern to save. Reset first."
-            )
+            messagebox.showwarning("No Pattern", "No initial pattern to save. Reset first.")
             return
 
         filename = filedialog.asksaveasfilename(
@@ -543,9 +583,7 @@ class TkinterGameOfLifeGUI:
                 with open(filename, "w") as f:
                     json.dump(self.initial_state, f, indent=2)
 
-                messagebox.showinfo(
-                    "Saved", f"Pattern saved to {os.path.basename(filename)}"
-                )
+                messagebox.showinfo("Saved", f"Pattern saved to {os.path.basename(filename)}")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save pattern: {str(e)}")
 
@@ -564,9 +602,7 @@ class TkinterGameOfLifeGUI:
                 with open(filename, "w") as f:
                     json.dump(current_state, f, indent=2)
 
-                messagebox.showinfo(
-                    "Saved", f"Current state saved to {os.path.basename(filename)}"
-                )
+                messagebox.showinfo("Saved", f"Current state saved to {os.path.basename(filename)}")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save current state: {str(e)}")
 
@@ -581,20 +617,257 @@ class TkinterGameOfLifeGUI:
         if filename:
             try:
                 with open(filename, "r") as f:
-                    state = json.load(f)
+                    data = json.load(f)
 
-                # Try to load as game state
                 self.running = False
-                self.game.load_state(state)
-                self.initial_state = state
-                self.redraw_all_cells()
 
-                messagebox.showinfo(
-                    "Loaded", f"Pattern loaded from {os.path.basename(filename)}"
-                )
+                # Check if this is a found pattern (has nested structure)
+                if "pattern" in data and "search_info" in data:
+                    # This is a found pattern - extract the pattern data
+                    pattern_data = data["pattern"]
+                    
+                    # Create pattern name from filename
+                    pattern_name = os.path.splitext(os.path.basename(filename))[0]
+                    
+                    # Create Pattern object
+                    from ..core.patterns import Pattern
+                    pattern = Pattern(
+                        name=pattern_name,
+                        cells=pattern_data.get("cells", []),
+                        description=f"Loaded from {os.path.basename(filename)}",
+                        metadata={"category": "Loaded Patterns"},
+                    )
+                    
+                    # Store simulation parameters for grid resizing
+                    if "simulation_parameters" in data:
+                        pattern.simulation_params = data["simulation_parameters"]
+                        pattern.grid_info = {
+                            "width": pattern.simulation_params.get("width"),
+                            "height": pattern.simulation_params.get("height"),
+                            "wrap_edges": pattern.simulation_params.get(
+                                "wrap_edges", pattern.simulation_params.get("toroidal", True)
+                            ),
+                        }
+                    else:
+                        # Legacy format
+                        pattern.grid_info = data.get("grid_info", {})
+                    
+                    # Resize grid if needed
+                    if hasattr(pattern, "grid_info") and pattern.grid_info:
+                        self._resize_grid_for_pattern(pattern)
+                    
+                    # Apply pattern to grid
+                    pattern_normalized = pattern.normalize()
+                    offset_x = (self.cols - pattern_normalized.get_size()[0]) // 2
+                    offset_y = (self.rows - pattern_normalized.get_size()[1]) // 2
+                    
+                    pattern_normalized.apply_to_grid(self.grid, offset_x, offset_y)
+                    self.game.reset(clear_grid=False)
+                    self.initial_state = self.game.save_state()
+                    
+                else:
+                    # Try to load as regular game state
+                    self.game.load_state(data)
+                    self.initial_state = data
+
+                self.redraw_all_cells()
+                messagebox.showinfo("Loaded", f"Pattern loaded from {os.path.basename(filename)}")
 
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load pattern: {str(e)}")
+
+    def _load_found_patterns(self) -> None:
+        """Load patterns from the found_patterns directory."""
+        found_patterns_dir = "found_patterns"
+        if not os.path.exists(found_patterns_dir):
+            return
+
+        try:
+            for filename in os.listdir(found_patterns_dir):
+                if filename.endswith(".json"):
+                    filepath = os.path.join(found_patterns_dir, filename)
+                    try:
+                        with open(filepath, "r") as f:
+                            saved_data = json.load(f)
+
+                        # Extract pattern from saved data
+                        if "pattern" in saved_data:
+                            pattern_data = saved_data["pattern"]
+
+                            # Create concise pattern name from condition and parameters
+                            condition = saved_data.get("search_info", {}).get("condition", "found pattern")
+                            sim_params = saved_data.get("simulation_parameters", {})
+
+                            # Create a more readable, concise name
+                            if "cycle length" in condition:
+                                cycle_len = condition.split()[-1]
+                                pattern_name = f"Cycle-{cycle_len}"
+                            elif "runs for at least" in condition:
+                                gens = condition.split()[-3]  # "runs for at least N generations"
+                                pattern_name = f"Long-run {gens}+"
+                            elif "extinction after" in condition:
+                                gens = condition.split()[-3]  # "goes extinct after at least N generations"
+                                pattern_name = f"Dies@{gens}+"
+                            elif "population" in condition:
+                                if "threshold" in condition:
+                                    pop = condition.split()[-1]
+                                    pattern_name = f"Pop≥{pop}"
+                                else:  # stabilizes with population
+                                    pop = condition.split()[-2]  # "stabilizes with exactly N cells"
+                                    pattern_name = f"Stable@{pop}"
+                            elif "bounding box" in condition:
+                                size = condition.split()[-1]  # "has bounding box of at least WxH"
+                                pattern_name = f"Box≥{size}"
+                            else:
+                                # Fallback for unknown conditions
+                                pattern_name = (
+                                    condition.replace("finishes with ", "")
+                                    .replace("goes extinct after at least ", "Dies@")
+                                    .replace(" generations", "")
+                                )
+
+                            # Add grid size and timestamp for uniqueness
+                            width = sim_params.get("width", "?")
+                            height = sim_params.get("height", "?")
+                            timestamp = saved_data.get("search_info", {}).get("search_timestamp", "unknown")
+                            # Use last 4 characters of timestamp for brevity
+                            unique_id = timestamp[-4:] if len(timestamp) >= 4 else timestamp
+                            pattern_name += f" ({width}×{height}) #{unique_id}"
+
+                            # Create pattern object
+                            from ..core.patterns import Pattern
+
+                            pattern = Pattern(
+                                name=pattern_name,
+                                cells=pattern_data.get("cells", []),
+                                description=f"Pattern found by CLI search: {condition}",
+                                metadata={"category": "Found Patterns"},
+                            )
+
+                            # Store simulation parameters for recreation
+                            # Support both new format (simulation_parameters) and old format (grid_info)
+                            if "simulation_parameters" in saved_data:
+                                pattern.simulation_params = saved_data["simulation_parameters"]
+                                # Backward compatibility: create grid_info from simulation_parameters
+                                pattern.grid_info = {
+                                    "width": pattern.simulation_params.get("width"),
+                                    "height": pattern.simulation_params.get("height"),
+                                    "wrap_edges": pattern.simulation_params.get(
+                                        "wrap_edges", pattern.simulation_params.get("toroidal", True)
+                                    ),
+                                }
+                            else:
+                                # Legacy format
+                                pattern.grid_info = saved_data.get("grid_info", {})
+                                pattern.simulation_params = {
+                                    "width": pattern.grid_info.get("width"),
+                                    "height": pattern.grid_info.get("height"),
+                                    "toroidal": pattern.grid_info.get("wrap_edges", True),
+                                    "wrap_edges": pattern.grid_info.get("wrap_edges", True),
+                                    "population_rate": 0.1,  # Default for legacy patterns
+                                    "max_generations": 10000,  # Default for legacy patterns
+                                }
+
+                            # Add to pattern library
+                            self.pattern_library.add_pattern(pattern)
+
+                    except Exception as e:
+                        print(f"Warning: Failed to load found pattern {filename}: {e}")
+
+        except Exception as e:
+            print(f"Warning: Failed to scan found_patterns directory: {e}")
+
+    def _setup_found_patterns_category(self) -> None:
+        """Override pattern library categorization to include found patterns."""
+        # Store original method
+        original_get_patterns_by_category = self.pattern_library.get_patterns_by_category
+
+        def enhanced_get_patterns_by_category():
+            # Get original categories
+            categories = original_get_patterns_by_category()
+
+            # Add found patterns category
+            found_patterns = []
+            for pattern_name in self.pattern_library._patterns:
+                pattern = self.pattern_library._patterns[pattern_name]
+                if hasattr(pattern, "metadata") and pattern.metadata.get("category") == "Found Patterns":
+                    found_patterns.append(pattern_name)
+
+            if found_patterns:
+                categories["Found Patterns"] = found_patterns
+
+            return categories
+
+        # Replace the method
+        self.pattern_library.get_patterns_by_category = enhanced_get_patterns_by_category
+
+    def _resize_grid_for_pattern(self, pattern) -> None:
+        """Resize the grid to match a pattern's original simulation parameters if needed."""
+        if not hasattr(pattern, "simulation_params") or not pattern.simulation_params:
+            # Fallback to legacy grid_info
+            if not hasattr(pattern, "grid_info") or not pattern.grid_info:
+                return
+            grid_info = pattern.grid_info
+            new_width = grid_info.get("width", self.cols)
+            new_height = grid_info.get("height", self.rows)
+            new_toroidal = grid_info.get("wrap_edges", True)
+        else:
+            # Use full simulation parameters
+            sim_params = pattern.simulation_params
+            new_width = sim_params.get("width", self.cols)
+            new_height = sim_params.get("height", self.rows)
+            new_toroidal = sim_params.get("toroidal", sim_params.get("wrap_edges", True))
+
+        # Only resize if different from current grid
+        if new_width != self.cols or new_height != self.rows or new_toroidal != self.grid.wrap_edges:
+
+            # Stop simulation
+            self.running = False
+
+            # Update grid dimensions
+            self.cols = new_width
+            self.rows = new_height
+
+            # Adjust canvas and cell size to fit
+            max_width = 1200  # Maximum canvas width
+            max_height = 800  # Maximum canvas height
+
+            # Calculate optimal cell size
+            cell_size_x = max_width // new_width
+            cell_size_y = max_height // new_height
+            self.cell_size = min(cell_size_x, cell_size_y, 10)  # Cap at 10 for visibility
+            self.cell_size = max(self.cell_size, 1)  # Minimum size of 1
+
+            # Update canvas dimensions
+            self.canvas_width = new_width * self.cell_size
+            self.canvas_height = new_height * self.cell_size
+
+            # Create new grid and game
+            self.grid = Grid(new_width, new_height, wrap_edges=new_toroidal)
+            self.game = GameOfLife(self.grid)
+
+            # Resize canvas
+            self.canvas.config(width=self.canvas_width, height=self.canvas_height)
+
+            # Clear and redraw
+            self.canvas.delete("all")
+            self.cell_objects = {}
+            self.redraw_all_cells()
+
+            # Update window title with grid info and simulation parameters
+            title = f"Conway's Game of Life - {new_width}x{new_height}"
+            if new_toroidal:
+                title += " (Toroidal)"
+
+            # Add additional simulation info if available
+            if hasattr(pattern, "simulation_params") and pattern.simulation_params:
+                sim_params = pattern.simulation_params
+                if sim_params.get("pattern"):
+                    title += f" - Pattern: {sim_params['pattern']}"
+                elif sim_params.get("population_rate"):
+                    title += f" - Population: {sim_params['population_rate']:.1%}"
+
+            self.master.title(title)
 
 
 def main() -> None:

@@ -23,6 +23,7 @@ pip install -e ".[dev]"
 - **Test mode**: `cellular-tkinter --test` (runs for 3 seconds and auto-exits)
 - **Command Line**: `cellular-cli` or `python -m cellular.frontends.cli`
 - **CLI with pattern**: `cellular-cli --pattern Glider --toroidal --verbose`
+- **CLI search mode**: `cellular-cli --search cycle_length:3 --search-attempts 500`
 
 ## Testing and Quality Assurance
 

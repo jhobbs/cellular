@@ -140,9 +140,7 @@ class TestArgumentParsing:
         """Test parsing basic arguments."""
         parser = create_parser()
 
-        args = parser.parse_args(
-            ["--width", "30", "--height", "40", "--population", "0.2", "--toroidal"]
-        )
+        args = parser.parse_args(["--width", "30", "--height", "40", "--population", "0.2", "--toroidal"])
 
         assert args.width == 30
         assert args.height == 40
@@ -153,9 +151,7 @@ class TestArgumentParsing:
         """Test parsing pattern-related arguments."""
         parser = create_parser()
 
-        args = parser.parse_args(
-            ["--pattern", "Glider", "--pattern-x", "10", "--pattern-y", "15"]
-        )
+        args = parser.parse_args(["--pattern", "Glider", "--pattern-x", "10", "--pattern-y", "15"])
 
         assert args.pattern == "Glider"
         assert args.pattern_x == 10
@@ -165,9 +161,7 @@ class TestArgumentParsing:
         """Test parsing output-related arguments."""
         parser = create_parser()
 
-        args = parser.parse_args(
-            ["--verbose", "--show-grid", "--max-generations", "5000"]
-        )
+        args = parser.parse_args(["--verbose", "--show-grid", "--max-generations", "5000"])
 
         assert args.verbose is True
         assert args.show_grid is True
@@ -177,9 +171,7 @@ class TestArgumentParsing:
         """Test parsing short argument forms."""
         parser = create_parser()
 
-        args = parser.parse_args(
-            ["-W", "25", "-H", "35", "-p", "0.15", "-t", "-m", "1000", "-v", "-g"]
-        )
+        args = parser.parse_args(["-W", "25", "-H", "35", "-p", "0.15", "-t", "-m", "1000", "-v", "-g"])
 
         assert args.width == 25
         assert args.height == 35

@@ -157,9 +157,7 @@ class TestGrid:
         # Test neighbor counts
         assert grid.get_neighbors(0, 0) == 1  # Only (1,1) neighbor
         assert grid.get_neighbors(2, 2) == 3  # All three cells are neighbors
-        assert (
-            grid.get_neighbors(1, 1) == 2
-        )  # (1,2) and (2,1) neighbors, cell itself doesn't count
+        assert grid.get_neighbors(1, 1) == 2  # (1,2) and (2,1) neighbors, cell itself doesn't count
         assert grid.get_neighbors(3, 3) == 0  # No neighbors
 
     def test_get_neighbors_with_wrap(self):

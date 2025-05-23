@@ -235,9 +235,7 @@ class TestTkinterGameOfLifeGUI:
 
     @patch("tkinter.filedialog.asksaveasfilename")
     @patch("tkinter.messagebox.showwarning")
-    def test_save_pattern_no_initial_state(
-        self, mock_showwarning, mock_filedialog, gui
-    ):
+    def test_save_pattern_no_initial_state(self, mock_showwarning, mock_filedialog, gui):
         """Test saving pattern with no initial state."""
         gui.initial_state = None
 
@@ -296,6 +294,8 @@ class TestTkinterGameOfLifeGUI:
 
     def test_mouse_event_simulation(self, gui):
         """Test simulated mouse events."""
+        # Clear grid first to ensure known state
+        gui.grid.clear()
 
         # Create mock event
         class MockEvent:

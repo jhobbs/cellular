@@ -72,6 +72,14 @@ cellular-cli --list-patterns
 
 # Get help
 cellular-cli --help
+
+# Search modes - find configurations meeting specific conditions
+cellular-cli --search cycle_length:2 --search-attempts 100
+cellular-cli --search runs_for_at_least:500 --population 0.15
+cellular-cli --search extinction_after:50 --width 20 --height 20
+cellular-cli --search population_threshold:100 --toroidal
+cellular-cli --search stabilizes_with_population:25
+cellular-cli --search bounding_box_size:15x10
 ```
 
 ### Programmatic Usage

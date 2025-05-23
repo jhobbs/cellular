@@ -127,10 +127,7 @@ class GameOfLife:
             old_state = self._state_history[0]
             if old_state in self._seen_states:
                 # Only delete if it's still the first occurrence
-                if (
-                    self._seen_states[old_state]
-                    == self._generation - len(self._state_history) + 1
-                ):
+                if self._seen_states[old_state] == self._generation - len(self._state_history) + 1:
                     del self._seen_states[old_state]
 
     def reset(self, clear_grid: bool = True) -> None:
@@ -222,10 +219,7 @@ class GameOfLife:
             ValueError: If state is incompatible with current grid
         """
         # Validate grid compatibility
-        if (
-            state["grid_width"] != self.grid.width
-            or state["grid_height"] != self.grid.height
-        ):
+        if state["grid_width"] != self.grid.width or state["grid_height"] != self.grid.height:
             raise ValueError(
                 f"Grid size mismatch: saved {state['grid_width']}x"
                 f"{state['grid_height']} vs current {self.grid.width}x"
@@ -258,12 +252,12 @@ class GameOfLife:
             "generation": self._generation,
             "population": self.population,
             "population_change_rate": self.get_population_change_rate(),
+            "population_history": list(self._population_history),
             "cycle_detected": self._cycle_detected,
             "cycle_length": self._cycle_length,
             "cycle_start_generation": self._cycle_start_generation,
             "grid_size": self.grid.shape,
-            "population_density": self.population
-            / (self.grid.width * self.grid.height),
+            "population_density": self.population / (self.grid.width * self.grid.height),
         }
 
         if bbox:

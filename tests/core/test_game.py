@@ -394,9 +394,7 @@ class TestGameOfLife:
         # Many cells should die from overpopulation, some may be born
         # The center cell (5,5) definitely should die (8 neighbors > 3)
         assert not grid.get_cell(5, 5)  # Center should be dead
-        assert (
-            game.population < initial_population
-        )  # Overall population should decrease
+        assert game.population < initial_population  # Overall population should decrease
 
     def test_conway_rules_birth(self):
         """Test Conway's rule: birth (exactly 3 neighbors)."""

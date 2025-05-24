@@ -38,13 +38,25 @@ pip install -e ".[dev]" --index-url https://download.pytorch.org/whl/cpu
 
 ## Running the Application
 
-- **Tkinter GUI**: `cellular-tkinter` or `python -m cellular.frontends.tkinter_gui`
+### Tkinter GUI
+- **Start GUI**: `cellular-tkinter` or `python -m cellular.frontends.tkinter_gui`
 - **Test mode**: `cellular-tkinter --test` (runs for 3 seconds and auto-exits)
-- **Command Line**: `cellular-cli` or `python -m cellular.frontends.cli`
-- **CLI with pattern**: `cellular-cli --pattern Glider --toroidal --verbose`
-- **CLI search mode**: `cellular-cli --search cycle_length:3 --search-attempts 500 --workers 4`
+- **Pattern loading**: File dialog defaults to `found_patterns/` directory if it exists
+- **Pattern reset**: Reset button reloads the last loaded pattern (shows as "Reset Pattern")
+
+### Command Line Interface
+- **Basic run**: `cellular-cli` or `python -m cellular.frontends.cli`
+- **With pattern**: `cellular-cli --pattern Glider --toroidal --verbose`
+- **List patterns**: `cellular-cli --list-patterns`
+
+### Pattern Search Modes
+- **Simple search**: `cellular-cli --search cycle_length:3 --search-attempts 500 --workers 4`
 - **Sequential search**: `cellular-cli --search cycle_length:3 --workers 1` (forces single-threaded)
-- **Save found patterns**: `cellular-cli --search cycle_length:6 --save-pattern 6peat_finishes`
+- **Save patterns**: `cellular-cli --search cycle_length:6 --save-pattern 6peat_finishes`
+- **Composite search**: `cellular-cli --search composite:1,2,3;true;false` (exclude cycles 1,2,3; allow extinction; no max gen)
+  - Format: `composite:exclude_cycles;allow_extinction;allow_max_generations`
+  - Example: `composite:2,3,4;true;true` finds patterns with cycles (except 2,3,4), extinctions, or max generations
+  - Saved files include termination reason: `_cycle5`, `_extinct`, `_maxgen`
 
 ## Testing and Quality Assurance
 
@@ -80,8 +92,9 @@ The CLI uses a **unified search system** where sequential searching is simply pa
 
 - **`parallel_search_for_condition()`**: Single search method handling both sequential (workers=1) and parallel (workers>1) cases
 - **Worker batching**: Work is divided into batches for efficient load balancing across workers
+- **Real-time pattern saving**: Separate `pattern_saver` thread monitors queue and saves patterns immediately upon discovery
 - **Comprehensive statistics**: Tracks total attempts, generations computed, cycle distributions, and end states
-- **Pattern saving**: Automatically saves successful configurations to `found_patterns/` directory
+- **Pattern saving**: Automatically saves successful configurations to `found_patterns/` directory with reason-based filenames
 - **Interrupt handling**: Graceful Ctrl+C handling with partial result reporting
 
 ### Key Design Patterns
@@ -109,18 +122,37 @@ The CLI supports various search conditions:
 - `population_threshold:N` - Patterns reaching population of N cells
 - `stabilizes_with_population:N` - Patterns stabilizing at exactly N cells
 - `bounding_box_size:WxH` - Patterns fitting within W×H bounding box
+- `composite:exclude_cycles;allow_extinction;allow_max_gens` - Flexible multi-condition search
+  - `exclude_cycles`: Comma-separated list of cycle lengths to exclude (e.g., `1,2,3`)
+  - `allow_extinction`: `true` to include extinct patterns, `false` to exclude
+  - `allow_max_gens`: `true` to include patterns hitting generation limit, `false` to exclude
 
 ## Dependencies
 
-- **Core**: `numpy>=1.20.0`, `scipy>=1.7.0`
+- **Core**: `numpy>=1.20.0`, `scipy>=1.7.0`, `torch>=2.0.0,<2.8.0`
 - **GUI**: `tkinter` (built-in)
 - **Development**: `pytest`, `pytest-cov`, `black`, `flake8`, `mypy`, `tox`
-- **Parallel processing**: `multiprocessing` (built-in)
+- **Parallel processing**: `multiprocessing` (built-in), `threading` for real-time pattern saving
 
 ## Search System Implementation Notes
 
 - **No separate sequential method**: The old `search_for_condition()` method was removed to eliminate code duplication
 - **Consistent return format**: All searches return `(found, attempts, result, end_state_stats)` tuple
 - **Worker coordination**: Uses shared queues, locks, and flags for coordinating parallel workers
+- **Real-time saving**: Pattern saver thread immediately saves patterns as they're discovered, not at run completion
 - **Progress monitoring**: Real-time progress updates with ETA calculations during long searches
 - **Statistics tracking**: Comprehensive end state analysis including cycle detection and generation counting
+- **Filename conventions**: Saved patterns include termination reason in filename (e.g., `pattern_cycle3_timestamp.json`)
+
+## Recent Feature Additions
+
+### CLI Enhancements
+- **Composite search conditions**: Search for patterns matching multiple criteria simultaneously
+- **Real-time pattern saving**: Patterns save immediately upon discovery via dedicated thread
+- **Reason-based filenames**: Pattern files include termination reason (`_cycle5`, `_extinct`, `_maxgen`)
+- **Console output**: Prints save location and details when patterns are saved
+
+### GUI Improvements
+- **Smart file dialog**: Defaults to `found_patterns/` directory when loading patterns
+- **Pattern reload**: Reset button remembers and reloads the last loaded pattern
+- **Visual feedback**: Window title shows loaded pattern name, reset button shows "Reset Pattern" when pattern loaded

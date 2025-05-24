@@ -62,6 +62,8 @@ class TkinterGameOfLifeGUI:
 
         # Pattern state tracking
         self.initial_state: Optional[Dict] = None
+        self.loaded_pattern: Optional[Any] = None  # Store loaded pattern for reload
+        self.loaded_pattern_name: Optional[str] = None
 
         self.setup_ui()
         self.reset_grid()
@@ -360,6 +362,14 @@ class TkinterGameOfLifeGUI:
             pattern_normalized.apply_to_grid(self.grid, offset_x, offset_y)
             self.game.reset(clear_grid=False)
             self.initial_state = self.game.save_state()
+            
+            # Store pattern for reload (different from file-loaded patterns)
+            self.loaded_pattern = pattern_normalized
+            self.loaded_pattern_name = pattern_name
+            
+            # Update window title and reset button
+            self.master.title(f"Conway's Game of Life - {pattern_name}")
+            self.reset_btn.config(text="Reset Pattern")
 
             self.redraw_all_cells()
 
@@ -408,10 +418,25 @@ class TkinterGameOfLifeGUI:
         self.running = was_running
 
     def reset_grid(self) -> None:
-        """Reset the grid with random population."""
-        self.initial_population = self.pop_slider.get()
-        self.grid.randomize(self.initial_population)
-        self.game.reset(clear_grid=False)
+        """Reset the grid - reload pattern if one was loaded, otherwise random population."""
+        if self.loaded_pattern:
+            # Reload the loaded pattern
+            self.grid.clear()
+            offset_x = (self.cols - self.loaded_pattern.get_size()[0]) // 2
+            offset_y = (self.rows - self.loaded_pattern.get_size()[1]) // 2
+            self.loaded_pattern.apply_to_grid(self.grid, offset_x, offset_y)
+            self.game.reset(clear_grid=False)
+        else:
+            # Random population
+            self.initial_population = self.pop_slider.get()
+            self.grid.randomize(self.initial_population)
+            self.game.reset(clear_grid=False)
+            
+            # Clear pattern info and reset title/button when using random
+            self.loaded_pattern = None
+            self.loaded_pattern_name = None
+            self.master.title("Conway's Game of Life")
+            self.reset_btn.config(text="Reset")
 
         # Save initial state
         self.initial_state = self.game.save_state()
@@ -611,10 +636,17 @@ class TkinterGameOfLifeGUI:
 
     def load_pattern(self) -> None:
         """Load a pattern from file."""
+        # Prefer found_patterns directory if it exists
+        found_patterns_dir = "found_patterns"
+        if os.path.exists(found_patterns_dir) and os.listdir(found_patterns_dir):
+            initial_dir = found_patterns_dir
+        else:
+            initial_dir = str(self.pattern_library.storage_dir)
+            
         filename = filedialog.askopenfilename(
             title="Load Pattern",
             filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-            initialdir=str(self.pattern_library.storage_dir),
+            initialdir=initial_dir,
         )
 
         if filename:
@@ -656,14 +688,31 @@ class TkinterGameOfLifeGUI:
                     pattern_normalized.apply_to_grid(self.grid, offset_x, offset_y)
                     self.game.reset(clear_grid=False)
                     self.initial_state = self.game.save_state()
+                    
+                    # Store loaded pattern for reload
+                    self.loaded_pattern = pattern_normalized
+                    self.loaded_pattern_name = pattern_name
 
                 else:
                     # Try to load as regular game state
                     self.game.load_state(data)
                     self.initial_state = data
+                    
+                    # Clear loaded pattern info since this is a state file
+                    self.loaded_pattern = None
+                    self.loaded_pattern_name = None
 
                 self.redraw_all_cells()
-                messagebox.showinfo("Loaded", f"Pattern loaded from {os.path.basename(filename)}")
+                
+                # Update window title and reset button if pattern was loaded
+                if self.loaded_pattern_name:
+                    self.master.title(f"Conway's Game of Life - {self.loaded_pattern_name}")
+                    self.reset_btn.config(text=f"Reset Pattern")
+                    messagebox.showinfo("Loaded", f"Pattern '{pattern_name}' loaded successfully\n\nClick 'Reset Pattern' to reload it")
+                else:
+                    self.master.title("Conway's Game of Life")
+                    self.reset_btn.config(text="Reset")
+                    messagebox.showinfo("Loaded", f"State loaded from {os.path.basename(filename)}")
 
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load pattern: {str(e)}")

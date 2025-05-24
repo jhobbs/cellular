@@ -102,11 +102,17 @@ def _search_worker_batched(args_tuple):
                             if grid.get_cell(x, y):
                                 initial_grid.set_cell(x, y, True)
 
-                    # Run simulation
+                    # Run simulation with timing
                     initial_population = game.population
+                    sim_start_time = time.time()
                     final_gen, reason = game.run_until_stable(max_generations)
+                    sim_end_time = time.time()
+                    sim_duration = sim_end_time - sim_start_time
+                    
                     stats = game.get_statistics()
                     stats["initial_population"] = initial_population
+                    stats["duration_seconds"] = sim_duration
+                    stats["generations_per_second"] = final_gen / sim_duration if sim_duration > 0 else 0
                     
                     # Track end state statistics
                     end_state_stats['total_attempts'] += 1
@@ -603,10 +609,10 @@ class CLIGameOfLife:
                             # Store the success result but don't return yet - collect remaining worker stats
                             total_attempts = sum(worker_stats.values())
 
-                            # Add timing information to stats
+                            # Add search timing information to stats (keep original simulation timing intact)
                             elapsed = time.time() - start_time
-                            stats["duration_seconds"] = elapsed
-                            stats["generations_per_second"] = final_gen / elapsed if elapsed > 0 else 0
+                            stats["search_duration_seconds"] = elapsed
+                            # Don't overwrite the simulation's own generation rate
 
                             if verbose:
                                 print(f"✓ Found matching configuration! Worker {worker_id}, attempt {attempt}")
@@ -1602,18 +1608,27 @@ def main() -> int:
 
             if found and result:
                 final_generation, reason, stats, saved_file = result
-                search_duration = stats.get("duration_seconds", 0)
+                search_duration = stats.get("search_duration_seconds", 0)
                 
                 # Use total attempts from end_state_stats for accurate rate calculation
                 total_work_attempts = end_state_stats.get('total_attempts', attempts) if end_state_stats else attempts
                 total_generations = end_state_stats.get('total_generations', 0) if end_state_stats else 0
                 attempts_per_sec = total_work_attempts / search_duration if search_duration > 0 else 0
-                generations_per_sec = total_generations / search_duration if search_duration > 0 else 0
+                
+                # Calculate average generations per attempt for computational rate
+                avg_gens_per_attempt = total_generations / total_work_attempts if total_work_attempts > 0 else 0
+                # Computational generations per second = attempts/sec * avg_gens/attempt
+                computational_gens_per_sec = attempts_per_sec * avg_gens_per_attempt
+                
                 overhead = overall_elapsed - search_duration
+                
+                # Simple wall-clock generations per second
+                wall_clock_gens_per_sec = total_generations / search_duration if search_duration > 0 else 0
                 
                 print(f"\n🎯 SUCCESS: Found configuration after {attempts} attempts")
                 print(f"Total work: {total_work_attempts} attempts across all workers")
-                print(f"Search rate: {attempts_per_sec:.1f} attempts/second, {generations_per_sec:.1f} generations/second")
+                print(f"Search rate: {attempts_per_sec:.1f} attempts/second, {wall_clock_gens_per_sec:.1f} generations/second")
+                print(f"Total generations: {total_generations} (avg {avg_gens_per_attempt:.1f} gen/attempt)")
                 print(f"Search time: {search_duration:.2f}s, Overall runtime: {overall_elapsed:.2f}s (overhead: {overhead:.2f}s)")
                 print_results(final_generation, reason, stats, args.verbose)
                 if saved_file:
@@ -1630,7 +1645,12 @@ def main() -> int:
                 total_work_attempts = end_state_stats.get('total_attempts', attempts) if end_state_stats else attempts
                 total_generations = end_state_stats.get('total_generations', 0) if end_state_stats else 0
                 attempts_per_sec = total_work_attempts / search_duration if search_duration > 0 else 0
-                generations_per_sec = total_generations / search_duration if search_duration > 0 else 0
+                
+                # Calculate average generations per attempt for computational rate
+                avg_gens_per_attempt = total_generations / total_work_attempts if total_work_attempts > 0 else 0
+                # Computational generations per second = attempts/sec * avg_gens/attempt
+                computational_gens_per_sec = attempts_per_sec * avg_gens_per_attempt
+                
                 overhead = overall_elapsed - search_duration
                 
                 # Determine if this was an interruption based on actual vs expected attempts
@@ -1644,7 +1664,11 @@ def main() -> int:
                     print(f"Total work: {total_work_attempts} attempts across all workers")
                     
                 if search_duration > 0:
-                    print(f"Search rate: {attempts_per_sec:.1f} attempts/second, {generations_per_sec:.1f} generations/second")
+                    # Simple wall-clock generations per second
+                    wall_clock_gens_per_sec = total_generations / search_duration if search_duration > 0 else 0
+                    
+                    print(f"Search rate: {attempts_per_sec:.1f} attempts/second, {wall_clock_gens_per_sec:.1f} generations/second")
+                    print(f"Total generations: {total_generations} (avg {avg_gens_per_attempt:.1f} gen/attempt)")
                     print(f"Search time: {search_duration:.2f}s, Overall runtime: {overall_elapsed:.2f}s (overhead: {overhead:.2f}s)")
                 else:
                     print(f"Overall runtime: {overall_elapsed:.2f}s")

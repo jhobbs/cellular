@@ -2,6 +2,8 @@
 
 from typing import Tuple, Iterator, Optional
 import numpy as np
+import torch
+import torch.nn.functional as F
 
 
 class Grid:
@@ -25,13 +27,17 @@ class Grid:
         self._cells = np.zeros((width, height), dtype=np.int8)
         self._previous_cells = np.zeros((width, height), dtype=np.int8)
         
-        # Pre-allocate arrays for performance optimization
-        self._binary_grid_cache = np.zeros((width, height), dtype=np.int8)
-        self._neighbor_counts_cache = np.zeros((width, height), dtype=np.int8)
+        # PyTorch optimization: pre-allocate tensors and kernel
+        # Set single-threaded to avoid conflicts with multiprocessing
+        torch.set_num_threads(1)
         
-        # Cache kernel and mode for performance (but not the module - not picklable)
-        self._kernel = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=np.int8)
-        self._convolution_mode = "wrap" if self.wrap_edges else "constant"
+        # PyTorch tensors for convolution (reused for efficiency)
+        self._torch_input = torch.zeros(1, 1, height, width, dtype=torch.float32)
+        self._torch_kernel = torch.tensor([
+            [1, 1, 1],
+            [1, 0, 1], 
+            [1, 1, 1]
+        ], dtype=torch.float32).unsqueeze(0).unsqueeze(0)
 
     @property
     def cells(self) -> np.ndarray:
@@ -179,27 +185,25 @@ class Grid:
         return count
 
     def count_all_neighbors(self) -> np.ndarray:
-        """Count neighbors for all cells using vectorized operations.
+        """Count neighbors for all cells using PyTorch-accelerated convolution.
 
         Returns:
             2D array with neighbor counts for each cell
         """
-        # Import scipy here to avoid pickle issues with cached modules
-        from scipy import ndimage
+        # Use PyTorch for fast convolution
+        # Grid uses (width, height) but PyTorch expects (height, width), so transpose
+        self._torch_input[0, 0] = torch.from_numpy((self._cells.T > 0).astype(np.float32))
         
-        # Use pre-allocated array to avoid memory allocation
-        # Convert to binary using pre-allocated cache
-        np.greater(self._cells, 0, out=self._binary_grid_cache)
+        if self.wrap_edges:
+            # For toroidal topology, use circular padding
+            padded = F.pad(self._torch_input, (1, 1, 1, 1), mode='circular')
+            neighbors = F.conv2d(padded, self._torch_kernel)
+        else:
+            # For bounded topology, use zero padding
+            neighbors = F.conv2d(self._torch_input, self._torch_kernel, padding=1)
         
-        # Use cached kernel and pre-allocated output
-        ndimage.convolve(
-            self._binary_grid_cache, 
-            self._kernel, 
-            mode=self._convolution_mode,
-            output=self._neighbor_counts_cache
-        )
-        
-        return self._neighbor_counts_cache
+        # Convert back to numpy and transpose back to (width, height)
+        return neighbors[0, 0].numpy().astype(np.int8).T
 
     def to_list(self) -> list:
         """Convert grid to nested list for serialization.

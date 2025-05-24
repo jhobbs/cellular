@@ -10,7 +10,7 @@ import signal
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import Manager
-from typing import Optional, Tuple, Dict, Any, Callable
+from typing import Optional, Tuple, Dict, Any, Callable, Union
 from datetime import datetime
 
 from ..core.grid import Grid
@@ -43,14 +43,14 @@ def _search_worker_batched(args_tuple):
     # Create local pattern library for this worker
     pattern_library = PatternLibrary()
     worker_attempts = 0
-    
+
     # Track end state statistics for this worker
     end_state_stats = {
-        'cycles': {},  # cycle_length -> count
-        'extinctions': 0,
-        'max_generations': 0,
-        'total_attempts': 0,
-        'total_generations': 0  # Track total generations computed
+        "cycles": {},  # cycle_length -> count
+        "extinctions": 0,
+        "max_generations": 0,
+        "total_attempts": 0,
+        "total_generations": 0,  # Track total generations computed
     }
 
     try:
@@ -58,23 +58,23 @@ def _search_worker_batched(args_tuple):
             # Get a batch of work
             try:
                 batch_start = work_queue.get_nowait()
-            except:
+            except Exception:
                 # No more work available
                 break
-                
+
             # Process this batch
             for batch_offset in range(batch_size):
                 # Check if another worker found a match
                 if stop_flag.value:
                     break
-                    
+
                 attempt = batch_start + batch_offset
                 worker_attempts += 1
-                
+
                 # Update global progress counter
                 with progress_lock:
                     progress_counter.value += 1
-                
+
                 # Unique seed for this attempt
                 attempt_seed = seed_base + attempt if seed_base else None
                 if attempt_seed:
@@ -108,22 +108,22 @@ def _search_worker_batched(args_tuple):
                     final_gen, reason = game.run_until_stable(max_generations)
                     sim_end_time = time.time()
                     sim_duration = sim_end_time - sim_start_time
-                    
+
                     stats = game.get_statistics()
                     stats["initial_population"] = initial_population
                     stats["duration_seconds"] = sim_duration
                     stats["generations_per_second"] = final_gen / sim_duration if sim_duration > 0 else 0
-                    
+
                     # Track end state statistics
-                    end_state_stats['total_attempts'] += 1
-                    end_state_stats['total_generations'] += final_gen
+                    end_state_stats["total_attempts"] += 1
+                    end_state_stats["total_generations"] += final_gen
                     if reason == "cycle":
                         cycle_length = stats.get("cycle_length", 0)
-                        end_state_stats['cycles'][cycle_length] = end_state_stats['cycles'].get(cycle_length, 0) + 1
+                        end_state_stats["cycles"][cycle_length] = end_state_stats["cycles"].get(cycle_length, 0) + 1
                     elif reason == "extinction":
-                        end_state_stats['extinctions'] += 1
+                        end_state_stats["extinctions"] += 1
                     elif reason == "max_generations":
-                        end_state_stats['max_generations'] += 1
+                        end_state_stats["max_generations"] += 1
 
                     # Check if condition is met based on type
                     condition_met = False
@@ -137,15 +137,28 @@ def _search_worker_batched(args_tuple):
                         population_history = stats.get("population_history", [])
                         condition_met = any(pop >= condition_value for pop in population_history)
                     elif condition_type == "stabilizes_with_population":
-                        condition_met = stats.get("population", 0) == condition_value and reason in ("cycle", "extinction")
+                        condition_met = stats.get("population", 0) == condition_value and reason in (
+                            "cycle",
+                            "extinction",
+                        )
                     elif condition_type == "bounding_box_size":
                         bbox_size = stats.get("bounding_box_size", (0, 0))
                         width_req, height_req = condition_value
                         condition_met = bbox_size[0] >= width_req and bbox_size[1] >= height_req
-                    
+
                     if condition_met:
                         stop_flag.value = True  # Signal other workers to stop
-                        return True, worker_id, attempt, final_gen, reason, stats, initial_grid, worker_attempts, end_state_stats
+                        return (
+                            True,
+                            worker_id,
+                            attempt,
+                            final_gen,
+                            reason,
+                            stats,
+                            initial_grid,
+                            worker_attempts,
+                            end_state_stats,
+                        )
 
                 except Exception:
                     continue  # Skip failed attempts
@@ -222,7 +235,7 @@ class CLIGameOfLife:
             grid.randomize(population_rate)
 
         initial_population = game.population
-        
+
         # Save initial grid state if requested
         initial_grid_copy = None
         if return_initial_grid:
@@ -231,7 +244,7 @@ class CLIGameOfLife:
                 for y in range(height):
                     if grid.get_cell(x, y):
                         initial_grid_copy.set_cell(x, y, True)
-        
+
         if verbose:
             print(f"Initial population: {initial_population} cells")
 
@@ -260,195 +273,11 @@ class CLIGameOfLife:
             print(f"\nFinal grid (generation {final_generation}):")
             print(self._format_grid(grid))
 
-        return final_generation, reason, stats, initial_grid_copy
-
-    def search_for_condition(
-        self,
-        width: int,
-        height: int,
-        population_rate: float,
-        toroidal: bool,
-        max_generations: int,
-        condition_func: Callable[[int, str, Dict[str, Any]], bool],
-        condition_name: str,
-        max_attempts: int = 1000,
-        pattern: Optional[str] = None,
-        pattern_x: int = 0,
-        pattern_y: int = 0,
-        verbose: bool = False,
-        seed: Optional[int] = None,
-        save_pattern: Optional[str] = None,
-    ) -> Tuple[bool, int, Optional[Tuple[int, str, Dict[str, Any], Optional[str]]]]:
-        """Search for configurations that meet a specific condition.
-
-        Args:
-            width: Grid width
-            height: Grid height
-            population_rate: Initial random population rate (0.0-1.0)
-            toroidal: Whether grid edges wrap around
-            max_generations: Maximum generations per attempt
-            condition_func: Function that takes (final_gen, reason, stats) and
-                returns bool
-            condition_name: Human-readable name for the condition
-            max_attempts: Maximum number of attempts to try
-            pattern: Optional pattern name (uses random population if None)
-            pattern_x: X offset for pattern placement
-            pattern_y: Y offset for pattern placement
-            verbose: Print progress updates
-            seed: Random seed for reproducibility
-            save_pattern: Optional base filename to save successful pattern
-
-        Returns:
-            Tuple of (found, attempts_made, result_if_found)
-            where result_if_found is (final_generation, reason, stats, saved_file) or None
-        """
-        if seed is not None:
-            random.seed(seed)
-
-        if verbose:
-            print(f"Searching for condition: {condition_name}")
-            print(f"Grid: {width}x{height} (toroidal: {toroidal})")
-            print(f"Max attempts: {max_attempts}, " f"Max generations per attempt: {max_generations}")
-            if pattern:
-                print(f"Using pattern: {pattern}")
-            else:
-                print(f"Using random population rate: {population_rate:.2%}")
-            print()
-
-        start_time = time.time()
-        last_progress_time = start_time
-        interrupted = False
-        
-        # Track end state statistics
-        end_state_stats = {
-            'cycles': {},  # cycle_length -> count
-            'extinctions': 0,
-            'max_generations': 0,
-            'total_attempts': 0,
-            'total_generations': 0  # Track total generations computed
-        }
-        
-        # Set up signal handler for graceful interruption
-        def signal_handler(signum, frame):
-            nonlocal interrupted
-            interrupted = True
-            print(f"\n⚠️ Search interrupted by user (Ctrl+C)")
-        
-        original_handler = signal.signal(signal.SIGINT, signal_handler)
-        
-        try:
-            for attempt in range(1, max_attempts + 1):
-                # Check for interruption
-                if interrupted:
-                    break
-                    
-                # Show progress every 100 attempts or every 2 seconds, whichever comes first
-                current_time = time.time()
-                if (verbose and attempt % 100 == 0) or (current_time - last_progress_time >= 2.0):
-                    elapsed = current_time - start_time
-                    attempts_per_sec = attempt / elapsed if elapsed > 0 else 0
-                    remaining_attempts = max_attempts - attempt
-                    eta_seconds = remaining_attempts / attempts_per_sec if attempts_per_sec > 0 else 0
-                    progress_pct = (attempt / max_attempts) * 100
-                    
-                    print(f"Progress: {attempt}/{max_attempts} ({progress_pct:.1f}%) - "
-                          f"{attempts_per_sec:.1f} attempts/sec - ETA: {eta_seconds:.0f}s")
-                    last_progress_time = current_time
-
-                # Save random state before this attempt for pattern saving
-                attempt_random_state = random.getstate()
-
-                # Run single simulation
-                try:
-                    final_gen, reason, stats, initial_grid = self.run_simulation(
-                        width=width,
-                        height=height,
-                        population_rate=population_rate,
-                        toroidal=toroidal,
-                        max_generations=max_generations,
-                        pattern=pattern,
-                        pattern_x=pattern_x,
-                        pattern_y=pattern_y,
-                        verbose=False,  # Suppress individual simulation output
-                        show_grid=False,
-                        return_initial_grid=save_pattern is not None,
-                    )
-                    
-                    # Track end state statistics
-                    end_state_stats['total_attempts'] += 1
-                    end_state_stats['total_generations'] += final_gen
-                    if reason == "cycle":
-                        cycle_length = stats.get("cycle_length", 0)
-                        end_state_stats['cycles'][cycle_length] = end_state_stats['cycles'].get(cycle_length, 0) + 1
-                    elif reason == "extinction":
-                        end_state_stats['extinctions'] += 1
-                    elif reason == "max_generations":
-                        end_state_stats['max_generations'] += 1
-
-                    # Check if condition is met
-                    if condition_func(final_gen, reason, stats):
-                        if verbose:
-                            elapsed = time.time() - start_time
-                            attempts_per_sec = attempt / elapsed if elapsed > 0 else 0
-                            print(f"✓ Found matching configuration on attempt {attempt}!")
-                            print(f"Search completed in {elapsed:.2f}s")
-                            print(f"Search rate: {attempts_per_sec:.1f} attempts/second")
-
-                        # Save pattern if requested
-                        saved_file = None
-                        if save_pattern and initial_grid:
-
-                            saved_file = self._save_successful_pattern(
-                                initial_grid,
-                                save_pattern,
-                                condition_name,
-                                final_gen,
-                                reason,
-                                stats,
-                                attempt,
-                                width,
-                                height,
-                                population_rate,
-                                toroidal,
-                                max_generations,
-                                pattern,
-                                pattern_x,
-                                pattern_y,
-                                seed,
-                            )
-                            if verbose and saved_file:
-                                print(f"💾 Pattern saved to: {saved_file}")
-
-                        return True, attempt, (final_gen, reason, stats, saved_file), end_state_stats
-
-                except Exception as e:
-                    if verbose:
-                        print(f"Simulation {attempt} failed: {e}")
-                    continue
-
-        finally:
-            # Restore original signal handler
-            signal.signal(signal.SIGINT, original_handler)
-
-        # Handle interrupted case - treat as if we ran out of attempts
-        final_attempt = attempt if 'attempt' in locals() else 0
-        elapsed = time.time() - start_time
-        
-        if interrupted:
-            if verbose:
-                attempts_per_sec = final_attempt / elapsed if elapsed > 0 else 0
-                print(f"⚠️ Search interrupted after {final_attempt} attempts")
-                print(f"Search completed in {elapsed:.2f}s")
-                print(f"Search rate: {attempts_per_sec:.1f} attempts/second")
+        if return_initial_grid:
+            return final_generation, reason, stats, initial_grid_copy
         else:
-            if verbose:
-                attempts_per_sec = max_attempts / elapsed if elapsed > 0 else 0
-                print(f"✗ No matching configuration found after {max_attempts} attempts")
-                print(f"Search completed in {elapsed:.2f}s")
-                print(f"Search rate: {attempts_per_sec:.1f} attempts/second")
+            return final_generation, reason, stats
 
-        # Return duration info even for failed/interrupted searches
-        return False, final_attempt, {"duration_seconds": elapsed}, end_state_stats
 
     def parallel_search_for_condition(
         self,
@@ -473,7 +302,7 @@ class CLIGameOfLife:
         """Search for patterns using batched parallel processing with work stealing."""
         if workers <= 0:
             workers = mp.cpu_count()
-            
+
         # Auto-determine batch size based on expected work complexity
         if batch_size <= 0:
             # Aim for ~100-500 batches total to balance overhead vs load balancing
@@ -493,11 +322,11 @@ class CLIGameOfLife:
 
         # Create shared resources for work distribution
         with Manager() as manager:
-            stop_flag = manager.Value('b', False)
+            stop_flag = manager.Value("b", False)
             work_queue = manager.Queue()
-            progress_counter = manager.Value('i', 0)  # Shared progress counter
+            progress_counter = manager.Value("i", 0)  # Shared progress counter
             progress_lock = manager.Lock()  # Lock for progress counter
-            
+
             # Fill work queue with batch starting indices
             for batch_idx in range(total_batches):
                 work_queue.put(batch_idx * batch_size)
@@ -528,37 +357,40 @@ class CLIGameOfLife:
 
             # Set up signal handler for graceful interruption
             interrupted = False
-            
+
             def signal_handler(signum, frame):
                 nonlocal interrupted
                 interrupted = True
                 stop_flag.value = True  # Signal workers to stop
-                print(f"\n⚠️ Search interrupted by user (Ctrl+C)")
-            
+                print("\n⚠️ Search interrupted by user (Ctrl+C)")
+
             original_handler = signal.signal(signal.SIGINT, signal_handler)
 
             # Run parallel search
             start_time = time.time()
             with ProcessPoolExecutor(max_workers=workers) as executor:
                 # Submit all workers
-                future_to_worker = {executor.submit(_search_worker_batched, args): i for i, args in enumerate(worker_args)}
+                future_to_worker = {
+                    executor.submit(_search_worker_batched, args): i for i, args in enumerate(worker_args)
+                }
 
                 # Start progress monitoring in a separate thread
                 import threading
+
                 progress_thread_stop = threading.Event()
-                
+
                 def progress_monitor():
                     last_progress_time = start_time
                     last_count = 0
-                    
+
                     while not progress_thread_stop.is_set() and not stop_flag.value:
                         time.sleep(1)  # Check every second
                         current_time = time.time()
-                        
+
                         # Get current progress
                         with progress_lock:
                             current_count = progress_counter.value
-                        
+
                         # Show progress every 2 seconds
                         if current_time - last_progress_time >= 2.0 and current_count > last_count:
                             elapsed = current_time - start_time
@@ -566,12 +398,14 @@ class CLIGameOfLife:
                             remaining_attempts = actual_max_attempts - current_count
                             eta_seconds = remaining_attempts / attempts_per_sec if attempts_per_sec > 0 else 0
                             progress_pct = min(100.0, (current_count / actual_max_attempts) * 100)
-                            
-                            print(f"Progress: {current_count}/{actual_max_attempts} ({progress_pct:.1f}%) - "
-                                  f"{attempts_per_sec:.1f} attempts/sec - ETA: {eta_seconds:.0f}s")
+
+                            print(
+                                f"Progress: {current_count}/{actual_max_attempts} ({progress_pct:.1f}%) - "
+                                f"{attempts_per_sec:.1f} attempts/sec - ETA: {eta_seconds:.0f}s"
+                            )
                             last_progress_time = current_time
                             last_count = current_count
-                
+
                 # Start progress thread
                 progress_thread = threading.Thread(target=progress_monitor, daemon=True)
                 progress_thread.start()
@@ -579,32 +413,44 @@ class CLIGameOfLife:
                 total_attempts = 0
                 worker_stats = {}
                 combined_end_state_stats = {
-                    'cycles': {},
-                    'extinctions': 0,
-                    'max_generations': 0,
-                    'total_attempts': 0,
-                    'total_generations': 0
+                    "cycles": {},
+                    "extinctions": 0,
+                    "max_generations": 0,
+                    "total_attempts": 0,
+                    "total_generations": 0,
                 }
-                
+
                 try:
                     success_result = None
                     workers_completed = 0
-                    
+
                     for future in as_completed(future_to_worker):
-                        found, worker_id, attempt, final_gen, reason, stats, initial_grid, worker_attempts, worker_end_state_stats = future.result()
+                        (
+                            found,
+                            worker_id,
+                            attempt,
+                            final_gen,
+                            reason,
+                            stats,
+                            initial_grid,
+                            worker_attempts,
+                            worker_end_state_stats,
+                        ) = future.result()
                         workers_completed += 1
                         worker_stats[worker_id] = worker_attempts
-                        
+
                         # Always combine end state statistics from this worker
-                        combined_end_state_stats['total_attempts'] += worker_end_state_stats['total_attempts']
-                        combined_end_state_stats['extinctions'] += worker_end_state_stats['extinctions']
-                        combined_end_state_stats['max_generations'] += worker_end_state_stats['max_generations']
-                        combined_end_state_stats['total_generations'] += worker_end_state_stats['total_generations']
-                        
+                        combined_end_state_stats["total_attempts"] += worker_end_state_stats["total_attempts"]
+                        combined_end_state_stats["extinctions"] += worker_end_state_stats["extinctions"]
+                        combined_end_state_stats["max_generations"] += worker_end_state_stats["max_generations"]
+                        combined_end_state_stats["total_generations"] += worker_end_state_stats["total_generations"]
+
                         # Merge cycle statistics
-                        for cycle_length, count in worker_end_state_stats['cycles'].items():
-                            combined_end_state_stats['cycles'][cycle_length] = combined_end_state_stats['cycles'].get(cycle_length, 0) + count
-                        
+                        for cycle_length, count in worker_end_state_stats["cycles"].items():
+                            combined_end_state_stats["cycles"][cycle_length] = (
+                                combined_end_state_stats["cycles"].get(cycle_length, 0) + count
+                            )
+
                         if found and success_result is None:
                             # Store the success result but don't return yet - collect remaining worker stats
                             total_attempts = sum(worker_stats.values())
@@ -641,35 +487,40 @@ class CLIGameOfLife:
                                 )
 
                             success_result = (True, attempt, (final_gen, reason, stats, saved_file))
-                            
+
                             # Signal other workers to stop
                             stop_flag.value = True
-                            
+
                             # If we have some workers left, wait a bit for them to finish their current batches
                             if workers_completed < workers and verbose:
-                                print(f"Waiting for remaining {workers - workers_completed} workers to finish current batches...")
-                    
+                                print(
+                                    f"Waiting for remaining {workers - workers_completed} workers "
+                                    f"to finish current batches..."
+                                )
+
                     # Calculate final totals after all workers have reported
                     final_total_attempts = sum(worker_stats.values())
-                    
+
                     # If we found a successful result, return it with complete end state stats
                     if success_result:
                         # Update the success result with final attempt count
                         success_found, match_attempt, result_tuple = success_result
                         final_gen, reason, stats, saved_file = result_tuple
-                        
+
                         if verbose:
                             print(f"Total attempts made: {final_total_attempts} (across {len(worker_stats)} workers)")
-                            attempts_per_sec = final_total_attempts / stats["duration_seconds"] if stats["duration_seconds"] > 0 else 0
+                            attempts_per_sec = (
+                                final_total_attempts / stats["duration_seconds"] if stats["duration_seconds"] > 0 else 0
+                            )
                             print(f"Search rate: {attempts_per_sec:.1f} attempts/second")
                             print(f"Worker distribution: {dict(sorted(worker_stats.items()))}")
-                        
+
                         return True, final_total_attempts, result_tuple, combined_end_state_stats
 
                     # No worker found a match - collect all worker stats
                     total_attempts = sum(worker_stats.values())
                     elapsed = time.time() - start_time
-                    
+
                     if interrupted:
                         if verbose:
                             print(f"⚠️ Search interrupted after {total_attempts} attempts")
@@ -688,13 +539,13 @@ class CLIGameOfLife:
                             print(f"Worker distribution: {dict(sorted(worker_stats.items()))}")
 
                     return False, total_attempts, {"duration_seconds": elapsed}, combined_end_state_stats
-                    
+
                 finally:
                     # Stop progress monitoring
                     progress_thread_stop.set()
                     if progress_thread.is_alive():
                         progress_thread.join(timeout=1)
-                    
+
                     # Restore original signal handler
                     signal.signal(signal.SIGINT, original_handler)
 
@@ -1089,7 +940,7 @@ def create_condition_functions() -> Dict[str, Callable]:
     }
 
 
-def parse_search_condition(condition_str: str) -> Tuple[Callable, str, str, Any]:
+def parse_search_condition(condition_str: str) -> Tuple[Callable, str]:
     """Parse a condition string into a condition function and description.
 
     Args:
@@ -1159,7 +1010,7 @@ def parse_search_condition(condition_str: str) -> Tuple[Callable, str, str, Any]
             raise ValueError(f"Invalid numeric value in condition: '{value_str}'")
         raise
 
-    return func, desc, condition_type, value
+    return func, desc
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -1190,10 +1041,10 @@ Examples:
 
   # Search for long-running patterns
   cellular-cli --search runs_for_at_least:1000 --population 0.15
-  
+
   # Search using 4 workers (parallel)
   cellular-cli --search cycle_length:3 --workers 4
-  
+
   # Force sequential search
   cellular-cli --search cycle_length:3 --workers 1
         """,
@@ -1330,23 +1181,23 @@ def format_finish_reason(reason: str, stats: dict) -> str:
 
 def print_end_state_statistics(end_state_stats: dict, verbose: bool = True) -> None:
     """Print end state statistics showing how attempts concluded.
-    
+
     Args:
         end_state_stats: Dictionary with cycle, extinction, and max_generations counts
         verbose: Whether to show detailed breakdown
     """
-    if not end_state_stats or end_state_stats.get('total_attempts', 0) == 0:
+    if not end_state_stats or end_state_stats.get("total_attempts", 0) == 0:
         return
-        
-    total = end_state_stats['total_attempts']
-    total_gens = end_state_stats.get('total_generations', 0)
-    cycles = end_state_stats.get('cycles', {})
-    extinctions = end_state_stats.get('extinctions', 0)
-    max_gens = end_state_stats.get('max_generations', 0)
-    
+
+    total = end_state_stats["total_attempts"]
+    total_gens = end_state_stats.get("total_generations", 0)
+    cycles = end_state_stats.get("cycles", {})
+    extinctions = end_state_stats.get("extinctions", 0)
+    max_gens = end_state_stats.get("max_generations", 0)
+
     avg_gens = total_gens / total if total > 0 else 0
     print(f"\nEnd State Distribution ({total} attempts, {total_gens} generations, avg {avg_gens:.1f} gen/attempt):")
-    
+
     # Show cycle breakdown
     if cycles:
         print("  Cycles:")
@@ -1355,16 +1206,16 @@ def print_end_state_statistics(end_state_stats: dict, verbose: bool = True) -> N
             count = cycles[cycle_length]
             percentage = (count / total) * 100
             print(f"    Length {cycle_length}: {count} attempts ({percentage:.1f}%)")
-        
+
         total_cycles = sum(cycles.values())
         cycle_percentage = (total_cycles / total) * 100
         print(f"    Total cycles: {total_cycles} attempts ({cycle_percentage:.1f}%)")
-    
+
     # Show other end states
     if extinctions > 0:
         percentage = (extinctions / total) * 100
         print(f"  Extinctions: {extinctions} attempts ({percentage:.1f}%)")
-    
+
     if max_gens > 0:
         percentage = (max_gens / total) * 100
         print(f"  Hit max generations: {max_gens} attempts ({percentage:.1f}%)")
@@ -1389,7 +1240,7 @@ def print_results(final_generation: int, reason: str, stats: dict, verbose: bool
         print(f"  Final population: {stats['population']}")
         print(f"  Population density: {stats['population_density']:.2%}")
         print(f"  Population change rate: {stats['population_change_rate']:.2f}")
-        if 'duration_seconds' in stats:
+        if "duration_seconds" in stats:
             print(f"  Duration: {stats['duration_seconds']:.3f} seconds")
             print(f"  Speed: {stats['generations_per_second']:.0f} generations/second")
 
@@ -1542,7 +1393,14 @@ def main() -> int:
         # Handle search mode
         if args.search:
             try:
-                condition_func, condition_desc, condition_type, condition_value = parse_search_condition(args.search)
+                condition_func, condition_desc = parse_search_condition(args.search)
+                # Parse condition type and value for parallel search
+                condition_type, value_str = args.search.split(":", 1)
+                if condition_type == "bounding_box_size":
+                    width_str, height_str = value_str.split("x")
+                    condition_value = (int(width_str), int(height_str))
+                else:
+                    condition_value = int(value_str)
             except ValueError as e:
                 print(f"Error: {e}")
                 return 1
@@ -1553,55 +1411,34 @@ def main() -> int:
                 workers = mp.cpu_count() if args.search_attempts >= 100 else 1
             else:
                 workers = args.workers
-            
-            use_parallel = workers > 1
-            
+
             # Start overall timing (includes process startup/shutdown overhead)
             overall_start_time = time.time()
-            
-            if use_parallel:
+
+            if workers > 1:
                 print(f"Using {workers} workers (batched work stealing)")
             else:
                 print(f"Sequential search: {args.search_attempts} attempts")
-            
-            if use_parallel:
-                # Run parallel search
-                found, attempts, result, end_state_stats = cli.parallel_search_for_condition(
-                    width=args.width,
-                    height=args.height,
-                    population_rate=args.population,
-                    toroidal=args.toroidal,
-                    max_generations=args.max_generations,
-                    condition_type=condition_type,
-                    condition_value=condition_value,
-                    condition_name=condition_desc,
-                    max_attempts=args.search_attempts,
-                    pattern=args.pattern,
-                    pattern_x=args.pattern_x,
-                    pattern_y=args.pattern_y,
-                    verbose=args.verbose,
-                    seed=args.search_seed,
-                    save_pattern=args.save_pattern,
-                    workers=workers,
-                )
-            else:
-                # Run sequential search
-                found, attempts, result, end_state_stats = cli.search_for_condition(
-                    width=args.width,
-                    height=args.height,
-                    population_rate=args.population,
-                    toroidal=args.toroidal,
-                    max_generations=args.max_generations,
-                    condition_func=condition_func,
-                    condition_name=condition_desc,
-                    max_attempts=args.search_attempts,
-                    pattern=args.pattern,
-                    pattern_x=args.pattern_x,
-                    pattern_y=args.pattern_y,
-                    verbose=args.verbose,
-                    seed=args.search_seed,
-                    save_pattern=args.save_pattern,
-                )
+
+            # Always use parallel search method (handles workers=1 for sequential)
+            found, attempts, result, end_state_stats = cli.parallel_search_for_condition(
+                width=args.width,
+                height=args.height,
+                population_rate=args.population,
+                toroidal=args.toroidal,
+                max_generations=args.max_generations,
+                condition_type=condition_type,
+                condition_value=condition_value,
+                condition_name=condition_desc,
+                max_attempts=args.search_attempts,
+                pattern=args.pattern,
+                pattern_x=args.pattern_x,
+                pattern_y=args.pattern_y,
+                verbose=args.verbose,
+                seed=args.search_seed,
+                save_pattern=args.save_pattern,
+                workers=workers,
+            )
 
             # Calculate overall runtime including overhead
             overall_elapsed = time.time() - overall_start_time
@@ -1609,81 +1446,99 @@ def main() -> int:
             if found and result:
                 final_generation, reason, stats, saved_file = result
                 search_duration = stats.get("search_duration_seconds", 0)
-                
+
                 # Use total attempts from end_state_stats for accurate rate calculation
-                total_work_attempts = end_state_stats.get('total_attempts', attempts) if end_state_stats else attempts
-                total_generations = end_state_stats.get('total_generations', 0) if end_state_stats else 0
+                total_work_attempts = end_state_stats.get("total_attempts", attempts) if end_state_stats else attempts
+                # For single success, estimate total generations: attempts * final_generation (rough estimate)
+                if end_state_stats:
+                    total_generations = end_state_stats.get("total_generations", 0)
+                else:
+                    # Rough estimate: assume all attempts ran similar number of generations
+                    total_generations = attempts * final_generation
                 attempts_per_sec = total_work_attempts / search_duration if search_duration > 0 else 0
-                
+
                 # Calculate average generations per attempt for computational rate
                 avg_gens_per_attempt = total_generations / total_work_attempts if total_work_attempts > 0 else 0
-                # Computational generations per second = attempts/sec * avg_gens/attempt
-                computational_gens_per_sec = attempts_per_sec * avg_gens_per_attempt
-                
+
                 overhead = overall_elapsed - search_duration
-                
+
                 # Simple wall-clock generations per second
                 wall_clock_gens_per_sec = total_generations / search_duration if search_duration > 0 else 0
-                
+
                 print(f"\n🎯 SUCCESS: Found configuration after {attempts} attempts")
                 print(f"Total work: {total_work_attempts} attempts across all workers")
-                print(f"Search rate: {attempts_per_sec:.1f} attempts/second, {wall_clock_gens_per_sec:.1f} generations/second")
+                print(
+                    f"Search rate: {attempts_per_sec:.1f} attempts/second, "
+                    f"{wall_clock_gens_per_sec:.1f} generations/second"
+                )
                 print(f"Total generations: {total_generations} (avg {avg_gens_per_attempt:.1f} gen/attempt)")
-                print(f"Search time: {search_duration:.2f}s, Overall runtime: {overall_elapsed:.2f}s (overhead: {overhead:.2f}s)")
+                print(
+                    f"Search time: {search_duration:.2f}s, Overall runtime: {overall_elapsed:.2f}s "
+                    f"(overhead: {overhead:.2f}s)"
+                )
                 print_results(final_generation, reason, stats, args.verbose)
                 if saved_file:
                     print(f"💾 Pattern saved to: {saved_file}")
-                
+
                 # Show end state statistics
                 print_end_state_statistics(end_state_stats, args.verbose)
                 return 0
             else:
                 # Get duration from failed search result
                 search_duration = result.get("duration_seconds", 0) if result else 0
-                
+
                 # Use total attempts from end_state_stats for accurate rate calculation
-                total_work_attempts = end_state_stats.get('total_attempts', attempts) if end_state_stats else attempts
-                total_generations = end_state_stats.get('total_generations', 0) if end_state_stats else 0
+                total_work_attempts = end_state_stats.get("total_attempts", attempts) if end_state_stats else attempts
+                # For failed searches, we don't have meaningful generation data without end_state_stats
+                if end_state_stats:
+                    total_generations = end_state_stats.get("total_generations", 0)
+                else:
+                    # Without end state stats, we can't estimate total generations for failed searches
+                    total_generations = 0
                 attempts_per_sec = total_work_attempts / search_duration if search_duration > 0 else 0
-                
+
                 # Calculate average generations per attempt for computational rate
                 avg_gens_per_attempt = total_generations / total_work_attempts if total_work_attempts > 0 else 0
-                # Computational generations per second = attempts/sec * avg_gens/attempt
-                computational_gens_per_sec = attempts_per_sec * avg_gens_per_attempt
-                
+
                 overhead = overall_elapsed - search_duration
-                
+
                 # Determine if this was an interruption based on actual vs expected attempts
                 was_interrupted = attempts < args.search_attempts and search_duration > 0
-                
+
                 if was_interrupted:
                     print(f"\n⚠️ INTERRUPTED: Search stopped after {attempts} attempts (of {args.search_attempts})")
                     print(f"Total work: {total_work_attempts} attempts across all workers")
                 else:
                     print(f"\n❌ FAILED: No configuration found after {attempts} attempts")
                     print(f"Total work: {total_work_attempts} attempts across all workers")
-                    
+
                 if search_duration > 0:
                     # Simple wall-clock generations per second
                     wall_clock_gens_per_sec = total_generations / search_duration if search_duration > 0 else 0
-                    
-                    print(f"Search rate: {attempts_per_sec:.1f} attempts/second, {wall_clock_gens_per_sec:.1f} generations/second")
+
+                    print(
+                        f"Search rate: {attempts_per_sec:.1f} attempts/second, "
+                        f"{wall_clock_gens_per_sec:.1f} generations/second"
+                    )
                     print(f"Total generations: {total_generations} (avg {avg_gens_per_attempt:.1f} gen/attempt)")
-                    print(f"Search time: {search_duration:.2f}s, Overall runtime: {overall_elapsed:.2f}s (overhead: {overhead:.2f}s)")
+                    print(
+                        f"Search time: {search_duration:.2f}s, Overall runtime: {overall_elapsed:.2f}s "
+                        f"(overhead: {overhead:.2f}s)"
+                    )
                 else:
                     print(f"Overall runtime: {overall_elapsed:.2f}s")
-                    
+
                 print(f"Condition: {condition_desc}")
                 if not was_interrupted:
                     print("Try increasing --search-attempts or adjusting parameters")
-                
+
                 # Show end state statistics
                 print_end_state_statistics(end_state_stats, args.verbose)
                 return 1
 
         else:
             # Run single simulation
-            final_generation, reason, stats, _ = cli.run_simulation(
+            final_generation, reason, stats = cli.run_simulation(
                 width=args.width,
                 height=args.height,
                 population_rate=args.population,

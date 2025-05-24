@@ -151,7 +151,7 @@ class GameOfLife:
 
     def clear_cycle_detection(self) -> None:
         """Clear cycle detection state while preserving generation and population history.
-        
+
         This should be called when the grid is manually modified to reset cycle detection
         since the state space has changed.
         """

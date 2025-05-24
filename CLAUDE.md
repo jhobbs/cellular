@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This repository contains a modular Python package for Conway's Game of Life with multiple frontend interfaces. The implementation focuses on performance optimization through vectorized operations, efficient rendering, and comprehensive testing.
+This repository contains a modular Python package for Conway's Game of Life with multiple frontend interfaces. The implementation focuses on performance optimization through vectorized operations, efficient rendering, and comprehensive pattern searching capabilities.
 
 ## Development Setup
 
@@ -23,17 +23,24 @@ pip install -e ".[dev]"
 - **Test mode**: `cellular-tkinter --test` (runs for 3 seconds and auto-exits)
 - **Command Line**: `cellular-cli` or `python -m cellular.frontends.cli`
 - **CLI with pattern**: `cellular-cli --pattern Glider --toroidal --verbose`
-- **CLI search mode**: `cellular-cli --search cycle_length:3 --search-attempts 500`
+- **CLI search mode**: `cellular-cli --search cycle_length:3 --search-attempts 500 --workers 4`
+- **Sequential search**: `cellular-cli --search cycle_length:3 --workers 1` (forces single-threaded)
+- **Save found patterns**: `cellular-cli --search cycle_length:6 --save-pattern 6peat_finishes`
 
 ## Testing and Quality Assurance
 
-- **Run all tests**: `pytest` or `tox`
-- **Test with coverage**: `pytest --cov=src/cellular`
-- **Run specific tests**: `pytest tests/core/test_game.py`
-- **Linting**: `tox -e lint` or `flake8 src tests`
-- **Type checking**: `tox -e type` or `mypy src`
-- **Code formatting**: `tox -e format` or `black src tests`
-- **All environments**: `tox` (tests Python 3.8-3.12)
+```bash
+# Development testing (no test suite currently exists)
+python -m cellular.frontends.cli --search cycle_length:3 --search-attempts 10 --verbose
+
+# Linting and formatting
+tox -e lint     # or flake8 src
+tox -e type     # or mypy src  
+tox -e format   # or black src
+
+# All environments
+tox
+```
 
 ## Package Architecture
 
@@ -46,41 +53,55 @@ pip install -e ".[dev]"
 ### Frontend Interfaces (`src/cellular/frontends/`)
 
 - **`tkinter_gui.py`**: Full-featured Tkinter GUI with pattern selection, statistics, and speed mode
-- **`cli.py`**: Command-line interface with argparse for batch simulations and scripting
-- Future frontends can be added here (web, etc.)
+- **`cli.py`**: Unified search implementation with both sequential and parallel processing capabilities
+
+### Search Architecture (`cli.py`)
+
+The CLI uses a **unified search system** where sequential searching is simply parallel searching with `workers=1`. Key components:
+
+- **`parallel_search_for_condition()`**: Single search method handling both sequential (workers=1) and parallel (workers>1) cases
+- **Worker batching**: Work is divided into batches for efficient load balancing across workers
+- **Comprehensive statistics**: Tracks total attempts, generations computed, cycle distributions, and end states
+- **Pattern saving**: Automatically saves successful configurations to `found_patterns/` directory
+- **Interrupt handling**: Graceful Ctrl+C handling with partial result reporting
 
 ### Key Design Patterns
 
 - **Separation of concerns**: Core logic independent of UI
 - **Vectorized operations**: Uses NumPy/SciPy for performance
-- **Observer pattern**: Game state changes trigger UI updates  
-- **Strategy pattern**: Multiple frontend implementations
+- **Unified search paths**: Sequential and parallel searches use identical code paths
+- **Worker pool management**: Efficient multiprocessing with shared state and work stealing
 - **Factory pattern**: Pattern library for creating known configurations
 
 ### Performance Optimizations
 
 - **Vectorized neighbor counting**: `scipy.ndimage.convolve` for fast neighbor calculation
-- **Differential rendering**: Only redraws changed cells in GUI
-- **Canvas object caching**: Reuses Tkinter objects instead of recreating
-- **Speed mode**: Batch processing of generations without per-frame rendering
+- **Batched parallel processing**: Work stealing algorithm prevents worker starvation
+- **Statistics aggregation**: Efficient collection of end state statistics across workers
 - **Memory management**: Bounded state history for cycle detection
+- **Differential rendering**: Only redraws changed cells in GUI (tkinter frontend)
 
-### Testing Structure
+### Pattern Search Conditions
 
-- **Unit tests**: Comprehensive coverage of core logic (`tests/core/`)
-- **Integration tests**: Frontend testing with mocked dependencies (`tests/frontends/`)
-- **Property-based testing**: Uses pytest fixtures for consistent test setup
-- **Performance tests**: Can be added for optimization validation
+The CLI supports various search conditions:
+- `cycle_length:N` - Finds patterns that stabilize with N-generation cycles
+- `runs_for_at_least:N` - Patterns that survive for at least N generations
+- `extinction_after:N` - Patterns that die out after exactly N generations  
+- `population_threshold:N` - Patterns reaching population of N cells
+- `stabilizes_with_population:N` - Patterns stabilizing at exactly N cells
+- `bounding_box_size:WxH` - Patterns fitting within W×H bounding box
 
 ## Dependencies
 
 - **Core**: `numpy>=1.20.0`, `scipy>=1.7.0`
 - **GUI**: `tkinter` (built-in)
 - **Development**: `pytest`, `pytest-cov`, `black`, `flake8`, `mypy`, `tox`
+- **Parallel processing**: `multiprocessing` (built-in)
 
-## Common Development Tasks
+## Search System Implementation Notes
 
-- **Add new pattern**: Add to `PatternLibrary._load_builtin_patterns()`
-- **Add new frontend**: Create in `src/cellular/frontends/` following `tkinter_gui.py` pattern
-- **Extend game rules**: Modify `GameOfLife._apply_rules()` method
-- **Add performance metrics**: Extend `GameOfLife.get_statistics()`
+- **No separate sequential method**: The old `search_for_condition()` method was removed to eliminate code duplication
+- **Consistent return format**: All searches return `(found, attempts, result, end_state_stats)` tuple
+- **Worker coordination**: Uses shared queues, locks, and flags for coordinating parallel workers
+- **Progress monitoring**: Real-time progress updates with ETA calculations during long searches
+- **Statistics tracking**: Comprehensive end state analysis including cycle detection and generation counting

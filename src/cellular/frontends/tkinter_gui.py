@@ -158,7 +158,7 @@ class TkinterGameOfLifeGUI:
             font=("Arial", 9),
         )
         self.topology_btn.pack(side=tk.LEFT, padx=3)
-        
+
         # Set initial button state based on grid topology
         if self.grid.wrap_edges:
             self.topology_btn.config(bg="#228B22", text="Toroidal")
@@ -294,7 +294,7 @@ class TkinterGameOfLifeGUI:
         self.stats_labels: Dict[str, tk.Label] = {}
         stats = [
             "Running",
-            "Population", 
+            "Population",
             "Rate Change",
             "Generation",
             "Cycle Status",
@@ -388,22 +388,22 @@ class TkinterGameOfLifeGUI:
         # Stop simulation during topology change
         was_running = self.running
         self.running = False
-        
+
         # Toggle topology
         self.grid.wrap_edges = not self.grid.wrap_edges
-        
+
         # Update button appearance
         if self.grid.wrap_edges:
             self.topology_btn.config(bg="#228B22", text="Toroidal")
         else:
             self.topology_btn.config(bg="#666666", text="Bounded")
-        
+
         # Update window title
         title = f"Conway's Game of Life - {self.cols}x{self.rows}"
         if self.grid.wrap_edges:
             title += " (Toroidal)"
         self.master.title(title)
-        
+
         # Restart simulation if it was running
         self.running = was_running
 
@@ -628,34 +628,35 @@ class TkinterGameOfLifeGUI:
                 if "pattern" in data and "search_info" in data:
                     # This is a found pattern - extract the pattern data
                     pattern_data = data["pattern"]
-                    
+
                     # Create pattern name from filename
                     pattern_name = os.path.splitext(os.path.basename(filename))[0]
-                    
+
                     # Create Pattern object
                     from ..core.patterns import Pattern
+
                     pattern = Pattern(
                         name=pattern_name,
                         cells=pattern_data.get("cells", []),
                         description=f"Loaded from {os.path.basename(filename)}",
                         metadata={"category": "Loaded Patterns"},
                     )
-                    
+
                     # Store simulation parameters for grid resizing
                     pattern.simulation_params = data["simulation_parameters"]
-                    
+
                     # Resize grid if needed
                     self._resize_grid_for_pattern(pattern)
-                    
+
                     # Apply pattern to grid
                     pattern_normalized = pattern.normalize()
                     offset_x = (self.cols - pattern_normalized.get_size()[0]) // 2
                     offset_y = (self.rows - pattern_normalized.get_size()[1]) // 2
-                    
+
                     pattern_normalized.apply_to_grid(self.grid, offset_x, offset_y)
                     self.game.reset(clear_grid=False)
                     self.initial_state = self.game.save_state()
-                    
+
                 else:
                     # Try to load as regular game state
                     self.game.load_state(data)
@@ -796,7 +797,7 @@ class TkinterGameOfLifeGUI:
         """Resize the grid to match a pattern's original simulation parameters if needed."""
         if not hasattr(pattern, "simulation_params") or not pattern.simulation_params:
             return
-            
+
         sim_params = pattern.simulation_params
         new_width = sim_params.get("width", self.cols)
         new_height = sim_params.get("height", self.rows)

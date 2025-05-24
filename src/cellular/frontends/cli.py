@@ -149,6 +149,15 @@ def _search_worker_batched(args_tuple):
                         condition_met = bbox_size[0] >= width_req and bbox_size[1] >= height_req
                     elif condition_type == "any_cycle_excluding":
                         condition_met = reason == "cycle" and stats.get("cycle_length", 0) not in condition_value
+                    elif condition_type == "composite":
+                        exclude_list, allow_extinction, allow_max_gens = condition_value
+                        if reason == "cycle":
+                            cycle_length = stats.get("cycle_length", 0)
+                            condition_met = cycle_length not in exclude_list
+                        elif reason == "extinction" and allow_extinction:
+                            condition_met = True
+                        elif reason == "max_generations" and allow_max_gens:
+                            condition_met = True
 
                     if condition_met:
                         # Store the found pattern
@@ -398,6 +407,10 @@ class CLIGameOfLife:
                 import threading
 
                 progress_thread_stop = threading.Event()
+                pattern_save_stop = threading.Event()
+                saved_patterns = []  # Track saved patterns
+                pattern_count_lock = threading.Lock()
+                pattern_counter = 0
 
                 def progress_monitor():
                     last_progress_time = start_time
@@ -426,9 +439,62 @@ class CLIGameOfLife:
                             last_progress_time = current_time
                             last_count = current_count
 
-                # Start progress thread
+                def pattern_saver():
+                    """Monitor queue and save patterns in real-time."""
+                    nonlocal pattern_counter
+                    
+                    while not pattern_save_stop.is_set():
+                        try:
+                            # Check for patterns with timeout
+                            if not found_patterns_queue.empty():
+                                pattern_data = found_patterns_queue.get_nowait()
+                                
+                                with pattern_count_lock:
+                                    pattern_counter += 1
+                                    current_count = pattern_counter
+                                
+                                # Save pattern if requested
+                                if save_pattern:
+                                    saved_file = self._save_successful_pattern(
+                                        pattern_data["initial_grid"],
+                                        f"{save_pattern}_{current_count}",
+                                        condition_name,
+                                        pattern_data["final_gen"],
+                                        pattern_data["reason"],
+                                        pattern_data["stats"],
+                                        pattern_data["attempt"],
+                                        width,
+                                        height,
+                                        population_rate,
+                                        toroidal,
+                                        max_generations,
+                                        pattern,
+                                        pattern_x,
+                                        pattern_y,
+                                        seed,
+                                    )
+                                    if saved_file:
+                                        # Always print when saving, include relevant details
+                                        details = []
+                                        # Include cycle length for any cycle-based condition
+                                        if pattern_data["reason"] == "cycle" and pattern_data["stats"].get("cycle_length"):
+                                            details.append(f"cycle length {pattern_data['stats']['cycle_length']}")
+                                        details.append(f"attempt {pattern_data['attempt']}")
+                                        print(f"💾 Saved pattern #{current_count}: {saved_file} ({', '.join(details)})")
+                                        saved_patterns.append(pattern_data)
+                            else:
+                                time.sleep(0.1)  # Short sleep when queue is empty
+                        except Exception:
+                            time.sleep(0.1)  # On error, just wait a bit
+
+                # Start threads
                 progress_thread = threading.Thread(target=progress_monitor, daemon=True)
                 progress_thread.start()
+                
+                pattern_saver_thread = None
+                if save_pattern and continue_search:
+                    pattern_saver_thread = threading.Thread(target=pattern_saver, daemon=True)
+                    pattern_saver_thread.start()
 
                 total_attempts = 0
                 worker_stats = {}
@@ -522,19 +588,25 @@ class CLIGameOfLife:
                     final_total_attempts = sum(worker_stats.values())
 
                     # Process all found patterns from the queue (for continue_search mode)
-                    found_patterns = []
-                    pattern_count = 0
-                    # Only process queue if we're in continue mode or don't have a success result yet
-                    if continue_search or success_result is None:
-                        while not found_patterns_queue.empty():
-                            try:
-                                pattern_data = found_patterns_queue.get_nowait()
-                                found_patterns.append(pattern_data)
-                                pattern_count += 1
-                                
-                                # Save each pattern if save_pattern is specified
-                                if save_pattern:
-                                    saved_file = self._save_successful_pattern(
+                    # In continue mode with save_pattern, patterns are already saved by the real-time thread
+                    if continue_search and save_pattern:
+                        # Patterns were already saved in real-time, just collect stats
+                        found_patterns = saved_patterns  # Use the patterns saved by the thread
+                    else:
+                        # Process queue for non-continue mode or when not saving
+                        found_patterns = []
+                        pattern_count = 0
+                        # Only process queue if we're in continue mode or don't have a success result yet
+                        if continue_search or success_result is None:
+                            while not found_patterns_queue.empty():
+                                try:
+                                    pattern_data = found_patterns_queue.get_nowait()
+                                    found_patterns.append(pattern_data)
+                                    pattern_count += 1
+                                    
+                                    # Save each pattern if save_pattern is specified
+                                    if save_pattern:
+                                        saved_file = self._save_successful_pattern(
                                         pattern_data["initial_grid"],
                                         f"{save_pattern}_{pattern_count}",
                                         condition_name,
@@ -551,17 +623,17 @@ class CLIGameOfLife:
                                         pattern_x,
                                         pattern_y,
                                         seed,
-                                    )
-                                    if saved_file:
-                                        # Always print when saving, include relevant details
-                                        details = []
-                                        # Include cycle length for any cycle-based condition
-                                        if pattern_data["reason"] == "cycle" and pattern_data["stats"].get("cycle_length"):
-                                            details.append(f"cycle length {pattern_data['stats']['cycle_length']}")
-                                        details.append(f"attempt {pattern_data['attempt']}")
-                                        print(f"💾 Saved pattern #{pattern_count}: {saved_file} ({', '.join(details)})")
-                            except:
-                                break
+                                        )
+                                        if saved_file:
+                                            # Always print when saving, include relevant details
+                                            details = []
+                                            # Include cycle length for any cycle-based condition
+                                            if pattern_data["reason"] == "cycle" and pattern_data["stats"].get("cycle_length"):
+                                                details.append(f"cycle length {pattern_data['stats']['cycle_length']}")
+                                            details.append(f"attempt {pattern_data['attempt']}")
+                                            print(f"💾 Saved pattern #{pattern_count}: {saved_file} ({', '.join(details)})")
+                                except:
+                                    break
 
                     if continue_search and found_patterns:
                         # In continue mode, report all found patterns
@@ -628,6 +700,12 @@ class CLIGameOfLife:
                     progress_thread_stop.set()
                     if progress_thread.is_alive():
                         progress_thread.join(timeout=1)
+                    
+                    # Stop pattern saver thread
+                    if pattern_saver_thread:
+                        pattern_save_stop.set()
+                        if pattern_saver_thread.is_alive():
+                            pattern_saver_thread.join(timeout=1)
 
                     # Restore original signal handler
                     signal.signal(signal.SIGINT, original_handler)
@@ -678,19 +756,21 @@ class CLIGameOfLife:
             # Create timestamp for unique filename
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-            # Extract condition type from condition_name for filename
-            condition_type = condition_name.split()[0] if " " in condition_name else "pattern"
-            
-            # Add cycle count to filename if it's a cycle-based pattern
-            cycle_suffix = ""
+            # Create descriptive suffix based on finish reason
             if reason == "cycle" and stats.get("cycle_length"):
-                cycle_suffix = f"_cycle{stats['cycle_length']}"
+                reason_suffix = f"_cycle{stats['cycle_length']}"
+            elif reason == "extinction":
+                reason_suffix = "_extinct"
+            elif reason == "max_generations":
+                reason_suffix = "_maxgen"
+            else:
+                reason_suffix = ""
 
             # Create filename
             if base_filename.endswith(".json"):
                 base_filename = base_filename[:-5]  # Remove .json extension
 
-            filename = f"{base_filename}_{condition_type}{cycle_suffix}_{timestamp}.json"
+            filename = f"{base_filename}{reason_suffix}_{timestamp}.json"
 
             # Create save directory if it doesn't exist
             save_dir = "found_patterns"
@@ -1029,6 +1109,21 @@ def create_condition_functions() -> Dict[str, Callable]:
 
         return condition
 
+    def composite_condition(exclude_cycles: list, allow_extinction: bool, allow_max_gens: bool):
+        """Composite condition: cycles (excluding list), extinction, or max generations."""
+
+        def condition(final_gen: int, reason: str, stats: Dict[str, Any]) -> bool:
+            if reason == "cycle":
+                cycle_length = stats.get("cycle_length", 0)
+                return cycle_length not in exclude_cycles
+            elif reason == "extinction" and allow_extinction:
+                return True
+            elif reason == "max_generations" and allow_max_gens:
+                return True
+            return False
+
+        return condition
+
     return {
         "runs_for_at_least_n_generations": runs_for_at_least_n_generations,
         "finishes_with_cycle_length": finishes_with_cycle_length,
@@ -1037,6 +1132,7 @@ def create_condition_functions() -> Dict[str, Callable]:
         "stabilizes_with_population": stabilizes_with_population,
         "has_bounding_box_size": has_bounding_box_size,
         "finishes_with_any_cycle_excluding": finishes_with_any_cycle_excluding,
+        "composite_condition": composite_condition,
     }
 
 
@@ -1101,6 +1197,38 @@ def parse_search_condition(condition_str: str) -> Tuple[Callable, str]:
             desc = f"finishes with any cycle except lengths: {', '.join(map(str, exclude_list))}"
             value = exclude_list
 
+        elif condition_type == "composite":
+            # Parse format: "composite:exclude_cycles;allow_extinction;allow_max_gens"
+            # Example: "composite:1,2;true;true" excludes cycles 1,2 and allows extinction/max_gens
+            parts = value_str.split(";")
+            if len(parts) != 3:
+                raise ValueError("composite requires format 'exclude_cycles;allow_extinction;allow_max_gens' (e.g., '1,2;true;true')")
+            
+            # Parse excluded cycles
+            if parts[0].strip():
+                exclude_list = [int(x.strip()) for x in parts[0].split(",")]
+            else:
+                exclude_list = []
+            
+            # Parse boolean flags
+            allow_extinction = parts[1].strip().lower() == "true"
+            allow_max_gens = parts[2].strip().lower() == "true"
+            
+            func = condition_funcs["composite_condition"](exclude_list, allow_extinction, allow_max_gens)
+            
+            # Build description
+            desc_parts = []
+            if exclude_list:
+                desc_parts.append(f"cycles except {', '.join(map(str, exclude_list))}")
+            else:
+                desc_parts.append("any cycle")
+            if allow_extinction:
+                desc_parts.append("extinction")
+            if allow_max_gens:
+                desc_parts.append("max generations")
+            desc = f"finishes with: {' or '.join(desc_parts)}"
+            value = (exclude_list, allow_extinction, allow_max_gens)
+
         else:
             available = [
                 "runs_for_at_least",
@@ -1110,6 +1238,7 @@ def parse_search_condition(condition_str: str) -> Tuple[Callable, str]:
                 "stabilizes_with_population",
                 "bounding_box_size",
                 "any_cycle_excluding",
+                "composite",
             ]
             raise ValueError(f"Unknown condition type '{condition_type}'. " f"Available: {', '.join(available)}")
 
@@ -1161,6 +1290,9 @@ Examples:
 
   # Continue searching after finding matches, save all found patterns
   cellular-cli --search cycle_length:3 --continue-search --save-pattern cycles3 --search-attempts 500
+  
+  # Composite search: find cycles (except 1,2), extinctions, or max generation patterns
+  cellular-cli --search composite:1,2;true;true --save-pattern interesting --search-attempts 1000
         """,
     )
 
@@ -1522,6 +1654,20 @@ def main() -> int:
                 elif condition_type == "any_cycle_excluding":
                     # Parse comma-separated list of cycle lengths to exclude
                     condition_value = [int(x.strip()) for x in value_str.split(",")]
+                elif condition_type == "composite":
+                    # Parse composite format
+                    parts = value_str.split(";")
+                    if len(parts) != 3:
+                        raise ValueError("composite requires format 'exclude_cycles;allow_extinction;allow_max_gens'")
+                    # Parse excluded cycles
+                    if parts[0].strip():
+                        exclude_list = [int(x.strip()) for x in parts[0].split(",")]
+                    else:
+                        exclude_list = []
+                    # Parse boolean flags
+                    allow_extinction = parts[1].strip().lower() == "true"
+                    allow_max_gens = parts[2].strip().lower() == "true"
+                    condition_value = (exclude_list, allow_extinction, allow_max_gens)
                 else:
                     condition_value = int(value_str)
             except ValueError as e:

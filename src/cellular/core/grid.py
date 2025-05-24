@@ -24,6 +24,14 @@ class Grid:
         self.wrap_edges = wrap_edges
         self._cells = np.zeros((width, height), dtype=np.int8)
         self._previous_cells = np.zeros((width, height), dtype=np.int8)
+        
+        # Pre-allocate arrays for performance optimization
+        self._binary_grid_cache = np.zeros((width, height), dtype=np.int8)
+        self._neighbor_counts_cache = np.zeros((width, height), dtype=np.int8)
+        
+        # Cache kernel and mode for performance (but not the module - not picklable)
+        self._kernel = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=np.int8)
+        self._convolution_mode = "wrap" if self.wrap_edges else "constant"
 
     @property
     def cells(self) -> np.ndarray:
@@ -176,13 +184,22 @@ class Grid:
         Returns:
             2D array with neighbor counts for each cell
         """
+        # Import scipy here to avoid pickle issues with cached modules
         from scipy import ndimage
-
-        kernel = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=np.int8)
-
-        binary_grid = (self._cells > 0).astype(np.int8)
-        mode = "wrap" if self.wrap_edges else "constant"
-        return ndimage.convolve(binary_grid, kernel, mode=mode)
+        
+        # Use pre-allocated array to avoid memory allocation
+        # Convert to binary using pre-allocated cache
+        np.greater(self._cells, 0, out=self._binary_grid_cache)
+        
+        # Use cached kernel and pre-allocated output
+        ndimage.convolve(
+            self._binary_grid_cache, 
+            self._kernel, 
+            mode=self._convolution_mode,
+            output=self._neighbor_counts_cache
+        )
+        
+        return self._neighbor_counts_cache
 
     def to_list(self) -> list:
         """Convert grid to nested list for serialization.

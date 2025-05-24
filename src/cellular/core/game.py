@@ -149,6 +149,18 @@ class GameOfLife:
 
         self._update_population_history()
 
+    def clear_cycle_detection(self) -> None:
+        """Clear cycle detection state while preserving generation and population history.
+        
+        This should be called when the grid is manually modified to reset cycle detection
+        since the state space has changed.
+        """
+        self._cycle_detected = False
+        self._cycle_length = 0
+        self._cycle_start_generation = 0
+        self._seen_states.clear()
+        self._state_history.clear()
+
     def run_until_stable(self, max_generations: int = 10000) -> Tuple[int, str]:
         """Run simulation until it becomes stable or cycles.
 

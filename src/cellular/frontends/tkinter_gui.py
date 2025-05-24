@@ -440,6 +440,9 @@ class TkinterGameOfLifeGUI:
             self.grid.toggle_cell(grid_x, grid_y)
             self.draw_cell(grid_x, grid_y)
 
+            # Clear cycle detection since grid state changed manually
+            self.game.clear_cycle_detection()
+
             # Update initial state if at generation 0
             if self.game.generation == 0:
                 self.initial_state = self.game.save_state()

@@ -43,6 +43,15 @@ def _search_worker_batched(args_tuple):
     # Create local pattern library for this worker
     pattern_library = PatternLibrary()
     worker_attempts = 0
+    
+    # Track end state statistics for this worker
+    end_state_stats = {
+        'cycles': {},  # cycle_length -> count
+        'extinctions': 0,
+        'max_generations': 0,
+        'total_attempts': 0,
+        'total_generations': 0  # Track total generations computed
+    }
 
     try:
         while not stop_flag.value:
@@ -98,6 +107,17 @@ def _search_worker_batched(args_tuple):
                     final_gen, reason = game.run_until_stable(max_generations)
                     stats = game.get_statistics()
                     stats["initial_population"] = initial_population
+                    
+                    # Track end state statistics
+                    end_state_stats['total_attempts'] += 1
+                    end_state_stats['total_generations'] += final_gen
+                    if reason == "cycle":
+                        cycle_length = stats.get("cycle_length", 0)
+                        end_state_stats['cycles'][cycle_length] = end_state_stats['cycles'].get(cycle_length, 0) + 1
+                    elif reason == "extinction":
+                        end_state_stats['extinctions'] += 1
+                    elif reason == "max_generations":
+                        end_state_stats['max_generations'] += 1
 
                     # Check if condition is met based on type
                     condition_met = False
@@ -119,7 +139,7 @@ def _search_worker_batched(args_tuple):
                     
                     if condition_met:
                         stop_flag.value = True  # Signal other workers to stop
-                        return True, worker_id, attempt, final_gen, reason, stats, initial_grid, worker_attempts
+                        return True, worker_id, attempt, final_gen, reason, stats, initial_grid, worker_attempts, end_state_stats
 
                 except Exception:
                     continue  # Skip failed attempts
@@ -127,7 +147,7 @@ def _search_worker_batched(args_tuple):
     except Exception:
         pass  # Worker cleanup
 
-    return False, worker_id, None, None, None, None, None, worker_attempts
+    return False, worker_id, None, None, None, None, None, worker_attempts, end_state_stats
 
 
 class CLIGameOfLife:
@@ -293,6 +313,15 @@ class CLIGameOfLife:
         last_progress_time = start_time
         interrupted = False
         
+        # Track end state statistics
+        end_state_stats = {
+            'cycles': {},  # cycle_length -> count
+            'extinctions': 0,
+            'max_generations': 0,
+            'total_attempts': 0,
+            'total_generations': 0  # Track total generations computed
+        }
+        
         # Set up signal handler for graceful interruption
         def signal_handler(signum, frame):
             nonlocal interrupted
@@ -338,6 +367,17 @@ class CLIGameOfLife:
                         show_grid=False,
                         return_initial_grid=save_pattern is not None,
                     )
+                    
+                    # Track end state statistics
+                    end_state_stats['total_attempts'] += 1
+                    end_state_stats['total_generations'] += final_gen
+                    if reason == "cycle":
+                        cycle_length = stats.get("cycle_length", 0)
+                        end_state_stats['cycles'][cycle_length] = end_state_stats['cycles'].get(cycle_length, 0) + 1
+                    elif reason == "extinction":
+                        end_state_stats['extinctions'] += 1
+                    elif reason == "max_generations":
+                        end_state_stats['max_generations'] += 1
 
                     # Check if condition is met
                     if condition_func(final_gen, reason, stats):
@@ -373,7 +413,7 @@ class CLIGameOfLife:
                             if verbose and saved_file:
                                 print(f"💾 Pattern saved to: {saved_file}")
 
-                        return True, attempt, (final_gen, reason, stats, saved_file)
+                        return True, attempt, (final_gen, reason, stats, saved_file), end_state_stats
 
                 except Exception as e:
                     if verbose:
@@ -402,7 +442,7 @@ class CLIGameOfLife:
                 print(f"Search rate: {attempts_per_sec:.1f} attempts/second")
 
         # Return duration info even for failed/interrupted searches
-        return False, final_attempt, {"duration_seconds": elapsed}
+        return False, final_attempt, {"duration_seconds": elapsed}, end_state_stats
 
     def parallel_search_for_condition(
         self,
@@ -532,20 +572,36 @@ class CLIGameOfLife:
 
                 total_attempts = 0
                 worker_stats = {}
+                combined_end_state_stats = {
+                    'cycles': {},
+                    'extinctions': 0,
+                    'max_generations': 0,
+                    'total_attempts': 0,
+                    'total_generations': 0
+                }
                 
                 try:
+                    success_result = None
+                    workers_completed = 0
+                    
                     for future in as_completed(future_to_worker):
-                        found, worker_id, attempt, final_gen, reason, stats, initial_grid, worker_attempts = future.result()
+                        found, worker_id, attempt, final_gen, reason, stats, initial_grid, worker_attempts, worker_end_state_stats = future.result()
+                        workers_completed += 1
                         worker_stats[worker_id] = worker_attempts
                         
-                        if found:
-                            # Calculate total attempts from all completed workers
+                        # Always combine end state statistics from this worker
+                        combined_end_state_stats['total_attempts'] += worker_end_state_stats['total_attempts']
+                        combined_end_state_stats['extinctions'] += worker_end_state_stats['extinctions']
+                        combined_end_state_stats['max_generations'] += worker_end_state_stats['max_generations']
+                        combined_end_state_stats['total_generations'] += worker_end_state_stats['total_generations']
+                        
+                        # Merge cycle statistics
+                        for cycle_length, count in worker_end_state_stats['cycles'].items():
+                            combined_end_state_stats['cycles'][cycle_length] = combined_end_state_stats['cycles'].get(cycle_length, 0) + count
+                        
+                        if found and success_result is None:
+                            # Store the success result but don't return yet - collect remaining worker stats
                             total_attempts = sum(worker_stats.values())
-
-                            # Cancel remaining workers
-                            for f in future_to_worker:
-                                if not f.done():
-                                    f.cancel()
 
                             # Add timing information to stats
                             elapsed = time.time() - start_time
@@ -555,10 +611,6 @@ class CLIGameOfLife:
                             if verbose:
                                 print(f"✓ Found matching configuration! Worker {worker_id}, attempt {attempt}")
                                 print(f"Search completed in {elapsed:.2f}s using {workers} workers")
-                                print(f"Total attempts made: {total_attempts} (across {len(worker_stats)} active workers)")
-                                attempts_per_sec = total_attempts / elapsed if elapsed > 0 else 0
-                                print(f"Search rate: {attempts_per_sec:.1f} attempts/second")
-                                print(f"Worker distribution: {dict(sorted(worker_stats.items()))}")
 
                             # Save pattern if requested
                             saved_file = None
@@ -582,7 +634,31 @@ class CLIGameOfLife:
                                     seed,
                                 )
 
-                            return True, total_attempts, (final_gen, reason, stats, saved_file)
+                            success_result = (True, attempt, (final_gen, reason, stats, saved_file))
+                            
+                            # Signal other workers to stop
+                            stop_flag.value = True
+                            
+                            # If we have some workers left, wait a bit for them to finish their current batches
+                            if workers_completed < workers and verbose:
+                                print(f"Waiting for remaining {workers - workers_completed} workers to finish current batches...")
+                    
+                    # Calculate final totals after all workers have reported
+                    final_total_attempts = sum(worker_stats.values())
+                    
+                    # If we found a successful result, return it with complete end state stats
+                    if success_result:
+                        # Update the success result with final attempt count
+                        success_found, match_attempt, result_tuple = success_result
+                        final_gen, reason, stats, saved_file = result_tuple
+                        
+                        if verbose:
+                            print(f"Total attempts made: {final_total_attempts} (across {len(worker_stats)} workers)")
+                            attempts_per_sec = final_total_attempts / stats["duration_seconds"] if stats["duration_seconds"] > 0 else 0
+                            print(f"Search rate: {attempts_per_sec:.1f} attempts/second")
+                            print(f"Worker distribution: {dict(sorted(worker_stats.items()))}")
+                        
+                        return True, final_total_attempts, result_tuple, combined_end_state_stats
 
                     # No worker found a match - collect all worker stats
                     total_attempts = sum(worker_stats.values())
@@ -605,7 +681,7 @@ class CLIGameOfLife:
                             print(f"Search rate: {attempts_per_sec:.1f} attempts/second")
                             print(f"Worker distribution: {dict(sorted(worker_stats.items()))}")
 
-                    return False, total_attempts, {"duration_seconds": elapsed}
+                    return False, total_attempts, {"duration_seconds": elapsed}, combined_end_state_stats
                     
                 finally:
                     # Stop progress monitoring
@@ -1246,6 +1322,48 @@ def format_finish_reason(reason: str, stats: dict) -> str:
         return f"Unknown reason: {reason}"
 
 
+def print_end_state_statistics(end_state_stats: dict, verbose: bool = True) -> None:
+    """Print end state statistics showing how attempts concluded.
+    
+    Args:
+        end_state_stats: Dictionary with cycle, extinction, and max_generations counts
+        verbose: Whether to show detailed breakdown
+    """
+    if not end_state_stats or end_state_stats.get('total_attempts', 0) == 0:
+        return
+        
+    total = end_state_stats['total_attempts']
+    total_gens = end_state_stats.get('total_generations', 0)
+    cycles = end_state_stats.get('cycles', {})
+    extinctions = end_state_stats.get('extinctions', 0)
+    max_gens = end_state_stats.get('max_generations', 0)
+    
+    avg_gens = total_gens / total if total > 0 else 0
+    print(f"\nEnd State Distribution ({total} attempts, {total_gens} generations, avg {avg_gens:.1f} gen/attempt):")
+    
+    # Show cycle breakdown
+    if cycles:
+        print("  Cycles:")
+        # Sort cycle lengths for consistent display
+        for cycle_length in sorted(cycles.keys()):
+            count = cycles[cycle_length]
+            percentage = (count / total) * 100
+            print(f"    Length {cycle_length}: {count} attempts ({percentage:.1f}%)")
+        
+        total_cycles = sum(cycles.values())
+        cycle_percentage = (total_cycles / total) * 100
+        print(f"    Total cycles: {total_cycles} attempts ({cycle_percentage:.1f}%)")
+    
+    # Show other end states
+    if extinctions > 0:
+        percentage = (extinctions / total) * 100
+        print(f"  Extinctions: {extinctions} attempts ({percentage:.1f}%)")
+    
+    if max_gens > 0:
+        percentage = (max_gens / total) * 100
+        print(f"  Hit max generations: {max_gens} attempts ({percentage:.1f}%)")
+
+
 def print_results(final_generation: int, reason: str, stats: dict, verbose: bool) -> None:
     """Print simulation results.
 
@@ -1442,7 +1560,7 @@ def main() -> int:
             
             if use_parallel:
                 # Run parallel search
-                found, attempts, result = cli.parallel_search_for_condition(
+                found, attempts, result, end_state_stats = cli.parallel_search_for_condition(
                     width=args.width,
                     height=args.height,
                     population_rate=args.population,
@@ -1462,7 +1580,7 @@ def main() -> int:
                 )
             else:
                 # Run sequential search
-                found, attempts, result = cli.search_for_condition(
+                found, attempts, result, end_state_stats = cli.search_for_condition(
                     width=args.width,
                     height=args.height,
                     population_rate=args.population,
@@ -1485,20 +1603,34 @@ def main() -> int:
             if found and result:
                 final_generation, reason, stats, saved_file = result
                 search_duration = stats.get("duration_seconds", 0)
-                attempts_per_sec = attempts / search_duration if search_duration > 0 else 0
+                
+                # Use total attempts from end_state_stats for accurate rate calculation
+                total_work_attempts = end_state_stats.get('total_attempts', attempts) if end_state_stats else attempts
+                total_generations = end_state_stats.get('total_generations', 0) if end_state_stats else 0
+                attempts_per_sec = total_work_attempts / search_duration if search_duration > 0 else 0
+                generations_per_sec = total_generations / search_duration if search_duration > 0 else 0
                 overhead = overall_elapsed - search_duration
                 
                 print(f"\n🎯 SUCCESS: Found configuration after {attempts} attempts")
-                print(f"Search rate: {attempts_per_sec:.1f} attempts/second")
+                print(f"Total work: {total_work_attempts} attempts across all workers")
+                print(f"Search rate: {attempts_per_sec:.1f} attempts/second, {generations_per_sec:.1f} generations/second")
                 print(f"Search time: {search_duration:.2f}s, Overall runtime: {overall_elapsed:.2f}s (overhead: {overhead:.2f}s)")
                 print_results(final_generation, reason, stats, args.verbose)
                 if saved_file:
                     print(f"💾 Pattern saved to: {saved_file}")
+                
+                # Show end state statistics
+                print_end_state_statistics(end_state_stats, args.verbose)
                 return 0
             else:
                 # Get duration from failed search result
                 search_duration = result.get("duration_seconds", 0) if result else 0
-                attempts_per_sec = attempts / search_duration if search_duration > 0 else 0
+                
+                # Use total attempts from end_state_stats for accurate rate calculation
+                total_work_attempts = end_state_stats.get('total_attempts', attempts) if end_state_stats else attempts
+                total_generations = end_state_stats.get('total_generations', 0) if end_state_stats else 0
+                attempts_per_sec = total_work_attempts / search_duration if search_duration > 0 else 0
+                generations_per_sec = total_generations / search_duration if search_duration > 0 else 0
                 overhead = overall_elapsed - search_duration
                 
                 # Determine if this was an interruption based on actual vs expected attempts
@@ -1506,11 +1638,13 @@ def main() -> int:
                 
                 if was_interrupted:
                     print(f"\n⚠️ INTERRUPTED: Search stopped after {attempts} attempts (of {args.search_attempts})")
+                    print(f"Total work: {total_work_attempts} attempts across all workers")
                 else:
                     print(f"\n❌ FAILED: No configuration found after {attempts} attempts")
+                    print(f"Total work: {total_work_attempts} attempts across all workers")
                     
                 if search_duration > 0:
-                    print(f"Search rate: {attempts_per_sec:.1f} attempts/second")
+                    print(f"Search rate: {attempts_per_sec:.1f} attempts/second, {generations_per_sec:.1f} generations/second")
                     print(f"Search time: {search_duration:.2f}s, Overall runtime: {overall_elapsed:.2f}s (overhead: {overhead:.2f}s)")
                 else:
                     print(f"Overall runtime: {overall_elapsed:.2f}s")
@@ -1518,6 +1652,9 @@ def main() -> int:
                 print(f"Condition: {condition_desc}")
                 if not was_interrupted:
                     print("Try increasing --search-attempts or adjusting parameters")
+                
+                # Show end state statistics
+                print_end_state_statistics(end_state_stats, args.verbose)
                 return 1
 
         else:

@@ -26,18 +26,16 @@ class Grid:
         self.wrap_edges = wrap_edges
         self._cells = np.zeros((width, height), dtype=np.int8)
         self._previous_cells = np.zeros((width, height), dtype=np.int8)
-        
+
         # PyTorch optimization: pre-allocate tensors and kernel
         # Set single-threaded to avoid conflicts with multiprocessing
         torch.set_num_threads(1)
-        
+
         # PyTorch tensors for convolution (reused for efficiency)
         self._torch_input = torch.zeros(1, 1, height, width, dtype=torch.float32)
-        self._torch_kernel = torch.tensor([
-            [1, 1, 1],
-            [1, 0, 1], 
-            [1, 1, 1]
-        ], dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        self._torch_kernel = (
+            torch.tensor([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        )
 
     @property
     def cells(self) -> np.ndarray:
@@ -193,15 +191,15 @@ class Grid:
         # Use PyTorch for fast convolution
         # Grid uses (width, height) but PyTorch expects (height, width), so transpose
         self._torch_input[0, 0] = torch.from_numpy((self._cells.T > 0).astype(np.float32))
-        
+
         if self.wrap_edges:
             # For toroidal topology, use circular padding
-            padded = F.pad(self._torch_input, (1, 1, 1, 1), mode='circular')
+            padded = F.pad(self._torch_input, (1, 1, 1, 1), mode="circular")
             neighbors = F.conv2d(padded, self._torch_kernel)
         else:
             # For bounded topology, use zero padding
             neighbors = F.conv2d(self._torch_input, self._torch_kernel, padding=1)
-        
+
         # Convert back to numpy and transpose back to (width, height)
         return neighbors[0, 0].numpy().astype(np.int8).T
 

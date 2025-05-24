@@ -6,15 +6,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repository contains a modular Python package for Conway's Game of Life with multiple frontend interfaces. The implementation focuses on performance optimization through vectorized operations, efficient rendering, and comprehensive pattern searching capabilities.
 
-## Development Setup
+## Installation
+
+### Basic Installation
 
 ```bash
 # Create virtual environment
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 
-# Install in development mode with all dependencies
+# Install package only (includes numpy, scipy, torch)
+pip install -e .
+
+# For CPU-only PyTorch (smaller download, no CUDA support):
+pip install -e . --index-url https://download.pytorch.org/whl/cpu
+```
+
+### Development Setup
+
+```bash
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Install package + development tools (pytest, black, flake8, mypy, tox)
 pip install -e ".[dev]"
+
+# For CPU-only PyTorch + development tools:
+pip install -e ".[dev]" --index-url https://download.pytorch.org/whl/cpu
 ```
 
 ## Running the Application

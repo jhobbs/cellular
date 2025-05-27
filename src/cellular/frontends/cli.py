@@ -6,193 +6,19 @@ import time
 import random
 import json
 import os
-import signal
-import multiprocessing as mp
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from multiprocessing import Manager
-from typing import Optional, Tuple, Dict, Any, Callable
+import torch
+import numpy as np
+from typing import Optional, Tuple, Dict, Any, List, Callable
 from datetime import datetime
 
 from ..core.grid import Grid
 from ..core.game import GameOfLife
+from ..core.batch_grid import BatchGrid
+from ..core.batch_game import BatchGameOfLife
 from ..core.patterns import PatternLibrary, Pattern
 
 
-def _search_worker_batched(args_tuple):
-    """Worker function for batched parallel search - must be at module level for pickling."""
-    (
-        width,
-        height,
-        population_rate,
-        toroidal,
-        max_generations,
-        pattern,
-        pattern_x,
-        pattern_y,
-        condition_type,
-        condition_value,
-        seed_base,
-        worker_id,
-        work_queue,
-        stop_flag,
-        batch_size,
-        progress_counter,
-        progress_lock,
-        continue_search,
-        found_patterns_queue,
-    ) = args_tuple
-
-    # Create local pattern library for this worker
-    pattern_library = PatternLibrary()
-    worker_attempts = 0
-
-    # Track end state statistics for this worker
-    end_state_stats = {
-        "cycles": {},  # cycle_length -> count
-        "extinctions": 0,
-        "max_generations": 0,
-        "total_attempts": 0,
-        "total_generations": 0,  # Track total generations computed
-    }
-
-    try:
-        while not stop_flag.value:
-            # Get a batch of work
-            try:
-                batch_start = work_queue.get_nowait()
-            except Exception:
-                # No more work available
-                break
-
-            # Process this batch
-            for batch_offset in range(batch_size):
-                # Check if another worker found a match
-                if stop_flag.value:
-                    break
-
-                attempt = batch_start + batch_offset
-                worker_attempts += 1
-
-                # Update global progress counter
-                with progress_lock:
-                    progress_counter.value += 1
-
-                # Unique seed for this attempt
-                attempt_seed = seed_base + attempt if seed_base else None
-                if attempt_seed:
-                    random.seed(attempt_seed)
-
-                try:
-                    # Create grid and game
-                    grid = Grid(width, height, wrap_edges=toroidal)
-                    game = GameOfLife(grid)
-
-                    # Set up initial state
-                    if pattern:
-                        loaded_pattern = pattern_library.get_pattern(pattern)
-                        if loaded_pattern:
-                            loaded_pattern.apply_to_grid(grid, pattern_x, pattern_y)
-                        else:
-                            grid.randomize(population_rate)
-                    else:
-                        grid.randomize(population_rate)
-
-                    # Save initial grid state for pattern saving
-                    initial_grid = Grid(width, height, toroidal)
-                    for x in range(width):
-                        for y in range(height):
-                            if grid.get_cell(x, y):
-                                initial_grid.set_cell(x, y, True)
-
-                    # Run simulation with timing
-                    initial_population = game.population
-                    sim_start_time = time.time()
-                    final_gen, reason = game.run_until_stable(max_generations)
-                    sim_end_time = time.time()
-                    sim_duration = sim_end_time - sim_start_time
-
-                    stats = game.get_statistics()
-                    stats["initial_population"] = initial_population
-                    stats["duration_seconds"] = sim_duration
-                    stats["generations_per_second"] = final_gen / sim_duration if sim_duration > 0 else 0
-
-                    # Track end state statistics
-                    end_state_stats["total_attempts"] += 1
-                    end_state_stats["total_generations"] += final_gen
-                    if reason == "cycle":
-                        cycle_length = stats.get("cycle_length", 0)
-                        end_state_stats["cycles"][cycle_length] = end_state_stats["cycles"].get(cycle_length, 0) + 1
-                    elif reason == "extinction":
-                        end_state_stats["extinctions"] += 1
-                    elif reason == "max_generations":
-                        end_state_stats["max_generations"] += 1
-
-                    # Check if condition is met based on type
-                    condition_met = False
-                    if condition_type == "cycle_length":
-                        condition_met = reason == "cycle" and stats.get("cycle_length") == condition_value
-                    elif condition_type == "runs_for_at_least":
-                        condition_met = final_gen >= condition_value and reason == "cycle"
-                    elif condition_type == "extinction_after":
-                        condition_met = reason == "extinction" and final_gen >= condition_value
-                    elif condition_type == "population_threshold":
-                        population_history = stats.get("population_history", [])
-                        condition_met = any(pop >= condition_value for pop in population_history)
-                    elif condition_type == "stabilizes_with_population":
-                        condition_met = stats.get("population", 0) == condition_value and reason in (
-                            "cycle",
-                            "extinction",
-                        )
-                    elif condition_type == "bounding_box_size":
-                        bbox_size = stats.get("bounding_box_size", (0, 0))
-                        width_req, height_req = condition_value
-                        condition_met = bbox_size[0] >= width_req and bbox_size[1] >= height_req
-                    elif condition_type == "any_cycle_excluding":
-                        condition_met = reason == "cycle" and stats.get("cycle_length", 0) not in condition_value
-                    elif condition_type == "composite":
-                        exclude_list, allow_extinction, allow_max_gens = condition_value
-                        if reason == "cycle":
-                            cycle_length = stats.get("cycle_length", 0)
-                            condition_met = cycle_length not in exclude_list
-                        elif reason == "extinction" and allow_extinction:
-                            condition_met = True
-                        elif reason == "max_generations" and allow_max_gens:
-                            condition_met = True
-
-                    if condition_met:
-                        # Store the found pattern
-                        found_pattern_data = {
-                            "worker_id": worker_id,
-                            "attempt": attempt,
-                            "final_gen": final_gen,
-                            "reason": reason,
-                            "stats": stats,
-                            "initial_grid": initial_grid,
-                        }
-                        found_patterns_queue.put(found_pattern_data)
-                        
-                        if not continue_search:
-                            stop_flag.value = True  # Signal other workers to stop
-                            return (
-                                True,
-                                worker_id,
-                                attempt,
-                                final_gen,
-                                reason,
-                                stats,
-                                initial_grid,
-                                worker_attempts,
-                                end_state_stats,
-                            )
-                        # If continue_search is True, just keep going
-
-                except Exception:
-                    continue  # Skip failed attempts
-
-    except Exception:
-        pass  # Worker cleanup
-
-    return False, worker_id, None, None, None, None, None, worker_attempts, end_state_stats
+# Removed multiprocessing worker function - now using tensor-based parallelization
 
 
 class CLIGameOfLife:
@@ -321,394 +147,262 @@ class CLIGameOfLife:
         verbose: bool = False,
         seed: Optional[int] = None,
         save_pattern: Optional[str] = None,
-        workers: int = 0,
+        device: str = 'cpu',
         batch_size: int = 0,
         continue_search: bool = False,
     ):
-        """Search for patterns using batched parallel processing with work stealing."""
-        if workers <= 0:
-            workers = mp.cpu_count()
-
-        # Auto-determine batch size based on expected work complexity
+        """Search for patterns using tensor-based parallel processing.
+        
+        Args:
+            width: Grid width
+            height: Grid height
+            population_rate: Initial random population rate
+            toroidal: Whether edges wrap around
+            max_generations: Max generations per simulation
+            condition_type: Type of condition to search for
+            condition_value: Value for the condition
+            condition_name: Human-readable condition name
+            max_attempts: Maximum number of attempts
+            pattern: Optional pattern to use as base
+            pattern_x: X offset for pattern
+            pattern_y: Y offset for pattern
+            verbose: Print progress updates
+            seed: Random seed for reproducibility
+            save_pattern: Base filename to save found patterns
+            device: Device to run on ('cpu' or 'cuda')
+            batch_size: Number of parallel simulations (0 for auto)
+            continue_search: Continue after finding first match
+        """
+        # Check device availability
+        if device == 'cuda' and not torch.cuda.is_available():
+            if verbose:
+                print("CUDA not available, falling back to CPU")
+            device = 'cpu'
+            
+        # Auto-determine batch size based on device and memory
         if batch_size <= 0:
-            # Aim for ~100-500 batches total to balance overhead vs load balancing
-            target_batches = min(500, max(100, max_attempts // 10))
-            batch_size = max(1, max_attempts // target_batches)
-
-        total_batches = (max_attempts + batch_size - 1) // batch_size  # Ceiling division
-        actual_max_attempts = total_batches * batch_size  # May be slightly more than requested
-
+            if device == 'cuda':
+                # Conservative estimate for GPU memory
+                batch_size = min(1000, max_attempts)
+            else:
+                # For CPU, use a reasonable batch size
+                batch_size = min(100, max_attempts)
+                
+        # Adjust batch size to not exceed max_attempts
+        batch_size = min(batch_size, max_attempts)
+        
         if verbose:
-            print(f"Batched parallel search using {workers} workers")
+            print(f"Tensor-based parallel search on {device.upper()}")
             print(f"Searching for condition: {condition_name}")
             print(f"Grid: {width}x{height} (toroidal: {toroidal})")
-            print(f"Max attempts: {max_attempts} (rounded up to {actual_max_attempts} for batching)")
+            print(f"Batch size: {batch_size} parallel simulations")
+            print(f"Max attempts: {max_attempts}")
             print(f"Max generations per attempt: {max_generations}")
-            print(f"Batch size: {batch_size} attempts/batch ({total_batches} total batches)")
-
-        # Create shared resources for work distribution
-        with Manager() as manager:
-            stop_flag = manager.Value("b", False)
-            work_queue = manager.Queue()
-            progress_counter = manager.Value("i", 0)  # Shared progress counter
-            progress_lock = manager.Lock()  # Lock for progress counter
-            found_patterns_queue = manager.Queue()  # Queue for found patterns in continue mode
-
-            # Fill work queue with batch starting indices
-            for batch_idx in range(total_batches):
-                work_queue.put(batch_idx * batch_size)
-
-            # Prepare worker arguments
-            worker_args = []
-            for worker_id in range(workers):
-                args = (
-                    width,
-                    height,
-                    population_rate,
-                    toroidal,
-                    max_generations,
-                    pattern,
-                    pattern_x,
-                    pattern_y,
-                    condition_type,
-                    condition_value,
-                    seed,
-                    worker_id,
-                    work_queue,
-                    stop_flag,
-                    batch_size,
-                    progress_counter,
-                    progress_lock,
-                    continue_search,
-                    found_patterns_queue,
-                )
-                worker_args.append(args)
-
-            # Set up signal handler for graceful interruption
-            interrupted = False
-
-            def signal_handler(signum, frame):
-                nonlocal interrupted
-                interrupted = True
-                stop_flag.value = True  # Signal workers to stop
-                print("\n⚠️ Search interrupted by user (Ctrl+C)")
-
-            original_handler = signal.signal(signal.SIGINT, signal_handler)
-
-            # Run parallel search
-            start_time = time.time()
-            with ProcessPoolExecutor(max_workers=workers) as executor:
-                # Submit all workers
-                future_to_worker = {
-                    executor.submit(_search_worker_batched, args): i for i, args in enumerate(worker_args)
-                }
-
-                # Start progress monitoring in a separate thread
-                import threading
-
-                progress_thread_stop = threading.Event()
-                pattern_save_stop = threading.Event()
-                saved_patterns = []  # Track saved patterns
-                pattern_count_lock = threading.Lock()
-                pattern_counter = 0
-
-                def progress_monitor():
-                    last_progress_time = start_time
-                    last_count = 0
-
-                    while not progress_thread_stop.is_set() and not stop_flag.value:
-                        time.sleep(1)  # Check every second
-                        current_time = time.time()
-
-                        # Get current progress
-                        with progress_lock:
-                            current_count = progress_counter.value
-
-                        # Show progress every 2 seconds
-                        if current_time - last_progress_time >= 2.0 and current_count > last_count:
-                            elapsed = current_time - start_time
-                            attempts_per_sec = current_count / elapsed if elapsed > 0 else 0
-                            remaining_attempts = actual_max_attempts - current_count
-                            eta_seconds = remaining_attempts / attempts_per_sec if attempts_per_sec > 0 else 0
-                            progress_pct = min(100.0, (current_count / actual_max_attempts) * 100)
-
-                            print(
-                                f"Progress: {current_count}/{actual_max_attempts} ({progress_pct:.1f}%) - "
-                                f"{attempts_per_sec:.1f} attempts/sec - ETA: {eta_seconds:.0f}s"
-                            )
-                            last_progress_time = current_time
-                            last_count = current_count
-
-                def pattern_saver():
-                    """Monitor queue and save patterns in real-time."""
-                    nonlocal pattern_counter
-                    
-                    while not pattern_save_stop.is_set():
-                        try:
-                            # Check for patterns with timeout
-                            if not found_patterns_queue.empty():
-                                pattern_data = found_patterns_queue.get_nowait()
-                                
-                                with pattern_count_lock:
-                                    pattern_counter += 1
-                                    current_count = pattern_counter
-                                
-                                # Save pattern if requested
-                                if save_pattern:
-                                    saved_file = self._save_successful_pattern(
-                                        pattern_data["initial_grid"],
-                                        f"{save_pattern}_{current_count}",
-                                        condition_name,
-                                        pattern_data["final_gen"],
-                                        pattern_data["reason"],
-                                        pattern_data["stats"],
-                                        pattern_data["attempt"],
-                                        width,
-                                        height,
-                                        population_rate,
-                                        toroidal,
-                                        max_generations,
-                                        pattern,
-                                        pattern_x,
-                                        pattern_y,
-                                        seed,
-                                    )
-                                    if saved_file:
-                                        # Always print when saving, include relevant details
-                                        details = []
-                                        # Include cycle length for any cycle-based condition
-                                        if pattern_data["reason"] == "cycle" and pattern_data["stats"].get("cycle_length"):
-                                            details.append(f"cycle length {pattern_data['stats']['cycle_length']}")
-                                        details.append(f"attempt {pattern_data['attempt']}")
-                                        print(f"💾 Saved pattern #{current_count}: {saved_file} ({', '.join(details)})")
-                                        saved_patterns.append(pattern_data)
-                            else:
-                                time.sleep(0.1)  # Short sleep when queue is empty
-                        except Exception:
-                            time.sleep(0.1)  # On error, just wait a bit
-
-                # Start threads
-                progress_thread = threading.Thread(target=progress_monitor, daemon=True)
-                progress_thread.start()
+            
+        # Initialize statistics
+        start_time = time.time()
+        total_attempts = 0
+        found_patterns = []
+        
+        end_state_stats = {
+            "cycles": {},
+            "extinctions": 0,
+            "max_generations": 0,
+            "total_attempts": 0,
+            "total_generations": 0,
+        }
+        
+        # Process in batches
+        remaining_attempts = max_attempts
+        attempt_offset = 0
+        
+        while remaining_attempts > 0 and (continue_search or len(found_patterns) == 0):
+            current_batch_size = min(batch_size, remaining_attempts)
+            
+            # Create batch grid and game
+            batch_grid = BatchGrid(current_batch_size, width, height, toroidal, device)
+            batch_game = BatchGameOfLife(batch_grid)
+            
+            # Initialize grids
+            if pattern:
+                # Load pattern for each grid
+                loaded_pattern = self.pattern_library.get_pattern(pattern)
+                if loaded_pattern:
+                    # Apply pattern to each grid in batch
+                    for i in range(current_batch_size):
+                        temp_grid = Grid(width, height, toroidal)
+                        loaded_pattern.apply_to_grid(temp_grid, pattern_x, pattern_y)
+                        # Convert to tensor and copy to batch
+                        cells_tensor = torch.from_numpy(temp_grid.cells.T).to(torch.uint8)
+                        batch_grid.copy_from_single(i, cells_tensor)
+                else:
+                    # Pattern not found, use random
+                    seeds = None
+                    if seed is not None:
+                        seeds = torch.arange(current_batch_size) + seed + attempt_offset
+                    batch_grid.randomize(population_rate, seeds)
+            else:
+                # Random initialization
+                seeds = None
+                if seed is not None:
+                    seeds = torch.arange(current_batch_size) + seed + attempt_offset
+                batch_grid.randomize(population_rate, seeds)
                 
-                pattern_saver_thread = None
-                if save_pattern and continue_search:
-                    pattern_saver_thread = threading.Thread(target=pattern_saver, daemon=True)
-                    pattern_saver_thread.start()
-
-                total_attempts = 0
-                worker_stats = {}
-                combined_end_state_stats = {
-                    "cycles": {},
-                    "extinctions": 0,
-                    "max_generations": 0,
-                    "total_attempts": 0,
-                    "total_generations": 0,
-                }
-
-                try:
-                    success_result = None
-                    workers_completed = 0
-
-                    for future in as_completed(future_to_worker):
-                        (
-                            found,
-                            worker_id,
-                            attempt,
-                            final_gen,
+            # Save initial states for pattern saving
+            initial_states = []
+            initial_populations = []
+            for i in range(current_batch_size):
+                initial_grid = Grid(width, height, toroidal)
+                cells = batch_grid.extract_single(i).cpu().numpy()
+                # Transpose back from (height, width) to (width, height)
+                initial_grid._cells = cells.T.astype(np.int8)
+                initial_states.append(initial_grid)
+                initial_populations.append(int(batch_grid.populations[i]))
+                
+            # Run simulations
+            if verbose and total_attempts % 100 == 0 and total_attempts > 0:
+                elapsed = time.time() - start_time
+                rate = total_attempts / elapsed if elapsed > 0 else 0
+                print(f"Progress: {total_attempts}/{max_attempts} attempts - {rate:.1f} attempts/sec")
+                
+            batch_game.run_until_stable_batch(max_generations)
+            
+            # Get results and check conditions
+            stats_list = batch_game.get_statistics_batch()
+            reasons = batch_game.get_termination_reasons()
+            
+            # Update end state statistics
+            for i in range(current_batch_size):
+                end_state_stats["total_attempts"] += 1
+                end_state_stats["total_generations"] += stats_list[i]["generation"]
+                
+                if reasons[i] == "cycle":
+                    cycle_len = stats_list[i]["cycle_length"]
+                    end_state_stats["cycles"][cycle_len] = end_state_stats["cycles"].get(cycle_len, 0) + 1
+                elif reasons[i] == "extinction":
+                    end_state_stats["extinctions"] += 1
+                elif reasons[i] == "max_generations":
+                    end_state_stats["max_generations"] += 1
+                    
+            # Check each simulation for condition match
+            for i in range(current_batch_size):
+                attempt_num = attempt_offset + i
+                stats = stats_list[i]
+                reason = reasons[i]
+                
+                # Add initial population and missing stats
+                stats["initial_population"] = initial_populations[i]
+                stats["population_change_rate"] = 0.0  # Not tracked in batch mode
+                stats["duration_seconds"] = 0.0  # Will be set for successful matches
+                stats["generations_per_second"] = 0.0  # Will be set for successful matches
+                
+                # Check condition
+                condition_met = self._check_condition(
+                    condition_type, condition_value, reason, stats, stats.get("generation", 0)
+                )
+                
+                if condition_met:
+                    # Found a match!
+                    found_pattern_data = {
+                        "attempt": attempt_num,
+                        "final_gen": stats["generation"],
+                        "reason": reason,
+                        "stats": stats,
+                        "initial_grid": initial_states[i],
+                    }
+                    found_patterns.append(found_pattern_data)
+                    
+                    # Save pattern if requested
+                    if save_pattern:
+                        pattern_num = len(found_patterns)
+                        saved_file = self._save_successful_pattern(
+                            initial_states[i],
+                            f"{save_pattern}_{pattern_num}" if continue_search else save_pattern,
+                            condition_name,
+                            stats["generation"],
                             reason,
                             stats,
-                            initial_grid,
-                            worker_attempts,
-                            worker_end_state_stats,
-                        ) = future.result()
-                        workers_completed += 1
-                        worker_stats[worker_id] = worker_attempts
-
-                        # Always combine end state statistics from this worker
-                        combined_end_state_stats["total_attempts"] += worker_end_state_stats["total_attempts"]
-                        combined_end_state_stats["extinctions"] += worker_end_state_stats["extinctions"]
-                        combined_end_state_stats["max_generations"] += worker_end_state_stats["max_generations"]
-                        combined_end_state_stats["total_generations"] += worker_end_state_stats["total_generations"]
-
-                        # Merge cycle statistics
-                        for cycle_length, count in worker_end_state_stats["cycles"].items():
-                            combined_end_state_stats["cycles"][cycle_length] = (
-                                combined_end_state_stats["cycles"].get(cycle_length, 0) + count
-                            )
-
-                        if found and success_result is None:
-                            # Store the success result but don't return yet - collect remaining worker stats
-                            total_attempts = sum(worker_stats.values())
-
-                            # Add search timing information to stats (keep original simulation timing intact)
-                            elapsed = time.time() - start_time
-                            stats["search_duration_seconds"] = elapsed
-                            # Don't overwrite the simulation's own generation rate
-
-                            if verbose:
-                                print(f"✓ Found matching configuration! Worker {worker_id}, attempt {attempt}")
-                                print(f"Search completed in {elapsed:.2f}s using {workers} workers")
-
-                            # Save pattern if requested
-                            saved_file = None
-                            if save_pattern and initial_grid:
-                                saved_file = self._save_successful_pattern(
-                                    initial_grid,
-                                    save_pattern,
-                                    condition_name,
-                                    final_gen,
-                                    reason,
-                                    stats,
-                                    total_attempts,
-                                    width,
-                                    height,
-                                    population_rate,
-                                    toroidal,
-                                    max_generations,
-                                    pattern,
-                                    pattern_x,
-                                    pattern_y,
-                                    seed,
-                                )
-
-                            success_result = (True, attempt, (final_gen, reason, stats, saved_file))
-
-                            # Signal other workers to stop
-                            stop_flag.value = True
-
-                            # If we have some workers left, wait a bit for them to finish their current batches
-                            if workers_completed < workers and verbose:
-                                print(
-                                    f"Waiting for remaining {workers - workers_completed} workers "
-                                    f"to finish current batches..."
-                                )
-
-                    # Calculate final totals after all workers have reported
-                    final_total_attempts = sum(worker_stats.values())
-
-                    # Process all found patterns from the queue (for continue_search mode)
-                    # In continue mode with save_pattern, patterns are already saved by the real-time thread
-                    if continue_search and save_pattern:
-                        # Patterns were already saved in real-time, just collect stats
-                        found_patterns = saved_patterns  # Use the patterns saved by the thread
-                    else:
-                        # Process queue for non-continue mode or when not saving
-                        found_patterns = []
-                        pattern_count = 0
-                        # Only process queue if we're in continue mode or don't have a success result yet
-                        if continue_search or success_result is None:
-                            while not found_patterns_queue.empty():
-                                try:
-                                    pattern_data = found_patterns_queue.get_nowait()
-                                    found_patterns.append(pattern_data)
-                                    pattern_count += 1
-                                    
-                                    # Save each pattern if save_pattern is specified
-                                    if save_pattern:
-                                        saved_file = self._save_successful_pattern(
-                                        pattern_data["initial_grid"],
-                                        f"{save_pattern}_{pattern_count}",
-                                        condition_name,
-                                        pattern_data["final_gen"],
-                                        pattern_data["reason"],
-                                        pattern_data["stats"],
-                                        pattern_data["attempt"],
-                                        width,
-                                        height,
-                                        population_rate,
-                                        toroidal,
-                                        max_generations,
-                                        pattern,
-                                        pattern_x,
-                                        pattern_y,
-                                        seed,
-                                        )
-                                        if saved_file:
-                                            # Always print when saving, include relevant details
-                                            details = []
-                                            # Include cycle length for any cycle-based condition
-                                            if pattern_data["reason"] == "cycle" and pattern_data["stats"].get("cycle_length"):
-                                                details.append(f"cycle length {pattern_data['stats']['cycle_length']}")
-                                            details.append(f"attempt {pattern_data['attempt']}")
-                                            print(f"💾 Saved pattern #{pattern_count}: {saved_file} ({', '.join(details)})")
-                                except:
-                                    break
-
-                    if continue_search and found_patterns:
-                        # In continue mode, report all found patterns
+                            attempt_num,
+                            width,
+                            height,
+                            population_rate,
+                            toroidal,
+                            max_generations,
+                            pattern,
+                            pattern_x,
+                            pattern_y,
+                            seed,
+                        )
+                        if saved_file:
+                            details = []
+                            if reason == "cycle" and stats.get("cycle_length"):
+                                details.append(f"cycle length {stats['cycle_length']}")
+                            details.append(f"attempt {attempt_num}")
+                            print(f"💾 Saved pattern #{pattern_num}: {saved_file} ({', '.join(details)})")
+                            
+                    if not continue_search:
+                        # Stop searching after first match
                         elapsed = time.time() - start_time
                         if verbose:
-                            print(f"\n🎯 CONTINUE MODE: Found {len(found_patterns)} matching patterns")
-                            print(f"Total attempts made: {final_total_attempts} (across {len(worker_stats)} workers)")
-                            print(f"Search completed in {elapsed:.2f}s using {workers} workers")
-                            attempts_per_sec = final_total_attempts / elapsed if elapsed > 0 else 0
-                            print(f"Search rate: {attempts_per_sec:.1f} attempts/second")
+                            print(f"✓ Found matching configuration! Attempt {attempt_num}")
+                            print(f"Search completed in {elapsed:.2f}s")
                             
-                            for i, pattern_data in enumerate(found_patterns, 1):
-                                print(f"Pattern #{i}: Worker {pattern_data['worker_id']}, attempt {pattern_data['attempt']}")
+                        stats["search_duration_seconds"] = elapsed
+                        total_attempts = attempt_offset + i + 1
                         
-                        # Return the first pattern as the "primary" result, but include all patterns
-                        first_pattern = found_patterns[0]
-                        first_pattern["stats"]["search_duration_seconds"] = elapsed
-                        result_tuple = (first_pattern["final_gen"], first_pattern["reason"], first_pattern["stats"], None)
-                        return True, final_total_attempts, result_tuple, combined_end_state_stats
-
-                    # If we found a successful result, return it with complete end state stats
-                    if success_result:
-                        # Update the success result with final attempt count
-                        success_found, match_attempt, result_tuple = success_result
-                        final_gen, reason, stats, saved_file = result_tuple
-
-                        if verbose:
-                            print(f"Total attempts made: {final_total_attempts} (across {len(worker_stats)} workers)")
-                            attempts_per_sec = (
-                                final_total_attempts / stats["search_duration_seconds"]
-                                if stats["search_duration_seconds"] > 0
-                                else 0
-                            )
-                            print(f"Search rate: {attempts_per_sec:.1f} attempts/second")
-                            print(f"Worker distribution: {dict(sorted(worker_stats.items()))}")
-
-                        return True, final_total_attempts, result_tuple, combined_end_state_stats
-
-                    # No worker found a match - collect all worker stats
-                    total_attempts = sum(worker_stats.values())
-                    elapsed = time.time() - start_time
-
-                    if interrupted:
-                        if verbose:
-                            print(f"⚠️ Search interrupted after {total_attempts} attempts")
-                            print(f"Search completed in {elapsed:.2f}s using {workers} workers")
-                            print(f"Batch size: {batch_size}")
-                            attempts_per_sec = total_attempts / elapsed if elapsed > 0 else 0
-                            print(f"Search rate: {attempts_per_sec:.1f} attempts/second")
-                            print(f"Worker distribution: {dict(sorted(worker_stats.items()))}")
-                    else:
-                        if verbose:
-                            print(f"✗ No matching configuration found after {total_attempts} attempts")
-                            print(f"Search completed in {elapsed:.2f}s using {workers} workers")
-                            print(f"Batch size: {batch_size}, Total batches processed: {total_batches}")
-                            attempts_per_sec = total_attempts / elapsed if elapsed > 0 else 0
-                            print(f"Search rate: {attempts_per_sec:.1f} attempts/second")
-                            print(f"Worker distribution: {dict(sorted(worker_stats.items()))}")
-
-                    return False, total_attempts, {"duration_seconds": elapsed}, combined_end_state_stats
-
-                finally:
-                    # Stop progress monitoring
-                    progress_thread_stop.set()
-                    if progress_thread.is_alive():
-                        progress_thread.join(timeout=1)
-                    
-                    # Stop pattern saver thread
-                    if pattern_saver_thread:
-                        pattern_save_stop.set()
-                        if pattern_saver_thread.is_alive():
-                            pattern_saver_thread.join(timeout=1)
-
-                    # Restore original signal handler
-                    signal.signal(signal.SIGINT, original_handler)
+                        return True, total_attempts, (stats["generation"], reason, stats, saved_file if save_pattern else None), end_state_stats
+                        
+            # Update counters
+            total_attempts += current_batch_size
+            remaining_attempts -= current_batch_size
+            attempt_offset += current_batch_size
+            
+        # Search complete
+        elapsed = time.time() - start_time
+        
+        if found_patterns:
+            # Found patterns in continue mode
+            if verbose:
+                print(f"\n🎯 Found {len(found_patterns)} matching patterns")
+                print(f"Total attempts: {total_attempts}")
+                print(f"Search completed in {elapsed:.2f}s")
+                rate = total_attempts / elapsed if elapsed > 0 else 0
+                print(f"Search rate: {rate:.1f} attempts/second")
+                
+            # Return first pattern as primary result
+            first = found_patterns[0]
+            first["stats"]["search_duration_seconds"] = elapsed
+            return True, total_attempts, (first["final_gen"], first["reason"], first["stats"], None), end_state_stats
+        else:
+            # No matches found
+            if verbose:
+                print(f"✗ No matching configuration found after {total_attempts} attempts")
+                print(f"Search completed in {elapsed:.2f}s")
+                rate = total_attempts / elapsed if elapsed > 0 else 0
+                print(f"Search rate: {rate:.1f} attempts/second")
+                
+            return False, total_attempts, {"duration_seconds": elapsed}, end_state_stats
+            
+    def _check_condition(self, condition_type: str, condition_value: Any, reason: str, stats: Dict, final_gen: int) -> bool:
+        """Check if a simulation result meets the search condition."""
+        if condition_type == "cycle_length":
+            return reason == "cycle" and stats.get("cycle_length") == condition_value
+        elif condition_type == "runs_for_at_least":
+            return final_gen >= condition_value and reason == "cycle"
+        elif condition_type == "extinction_after":
+            return reason == "extinction" and final_gen >= condition_value
+        elif condition_type == "any_cycle_excluding":
+            return reason == "cycle" and stats.get("cycle_length", 0) not in condition_value
+        elif condition_type == "composite":
+            exclude_list, allow_extinction, allow_max_gens = condition_value
+            if reason == "cycle":
+                cycle_length = stats.get("cycle_length", 0)
+                return cycle_length not in exclude_list
+            elif reason == "extinction" and allow_extinction:
+                return True
+            elif reason == "max_generations" and allow_max_gens:
+                return True
+        return False
 
     def _save_successful_pattern(
         self,
@@ -1066,37 +760,6 @@ def create_condition_functions() -> Dict[str, Callable]:
 
         return condition
 
-    def reaches_population_threshold(min_population: int):
-        """Condition: reaches at least the specified population at some point."""
-
-        def condition(final_gen: int, reason: str, stats: Dict[str, Any]) -> bool:
-            # Check if any point in history reached the threshold
-            pop_history = stats.get("population_history", [0])
-            if not pop_history:
-                return False
-            max_pop = max(pop_history)
-            return max_pop >= min_population
-
-        return condition
-
-    def stabilizes_with_population(target_population: int):
-        """Condition: stabilizes (cycles or still life) with specific population."""
-
-        def condition(final_gen: int, reason: str, stats: Dict[str, Any]) -> bool:
-            if reason in ["cycle", "max_generations"]:
-                return stats.get("population", 0) == target_population
-            return False
-
-        return condition
-
-    def has_bounding_box_size(min_width: int, min_height: int):
-        """Condition: final pattern has bounding box of at least specified size."""
-
-        def condition(final_gen: int, reason: str, stats: Dict[str, Any]) -> bool:
-            bbox_size = stats.get("bounding_box_size", (0, 0))
-            return bbox_size[0] >= min_width and bbox_size[1] >= min_height
-
-        return condition
 
     def finishes_with_any_cycle_excluding(exclude_cycles: list):
         """Condition: simulation finishes with any cycle length except those in exclude list."""
@@ -1128,9 +791,6 @@ def create_condition_functions() -> Dict[str, Callable]:
         "runs_for_at_least_n_generations": runs_for_at_least_n_generations,
         "finishes_with_cycle_length": finishes_with_cycle_length,
         "finishes_with_extinction_after_n_generations": (finishes_with_extinction_after_n_generations),
-        "reaches_population_threshold": reaches_population_threshold,
-        "stabilizes_with_population": stabilizes_with_population,
-        "has_bounding_box_size": has_bounding_box_size,
         "finishes_with_any_cycle_excluding": finishes_with_any_cycle_excluding,
         "composite_condition": composite_condition,
     }
@@ -1171,24 +831,6 @@ def parse_search_condition(condition_str: str) -> Tuple[Callable, str]:
             func = condition_funcs["finishes_with_extinction_after_n_generations"](value)
             desc = f"goes extinct after at least {value} generations"
 
-        elif condition_type == "population_threshold":
-            value = int(value_str)
-            func = condition_funcs["reaches_population_threshold"](value)
-            desc = f"reaches population of at least {value}"
-
-        elif condition_type == "stabilizes_with_population":
-            value = int(value_str)
-            func = condition_funcs["stabilizes_with_population"](value)
-            desc = f"stabilizes with exactly {value} cells"
-
-        elif condition_type == "bounding_box_size":
-            if "x" not in value_str:
-                raise ValueError("bounding_box_size requires format 'WxH' (e.g., '10x5')")
-            width_str, height_str = value_str.split("x")
-            width, height = int(width_str), int(height_str)
-            func = condition_funcs["has_bounding_box_size"](width, height)
-            desc = f"has bounding box of at least {width}x{height}"
-            value = (width, height)
 
         elif condition_type == "any_cycle_excluding":
             # Parse comma-separated list of cycle lengths to exclude
@@ -1234,9 +876,6 @@ def parse_search_condition(condition_str: str) -> Tuple[Callable, str]:
                 "runs_for_at_least",
                 "cycle_length",
                 "extinction_after",
-                "population_threshold",
-                "stabilizes_with_population",
-                "bounding_box_size",
                 "any_cycle_excluding",
                 "composite",
             ]
@@ -1388,10 +1027,18 @@ Examples:
     )
 
     parser.add_argument(
-        "--workers",
+        "--device",
+        type=str,
+        default="cpu",
+        choices=["cpu", "cuda"],
+        help="Device to run tensor computations on (default: cpu)",
+    )
+    
+    parser.add_argument(
+        "--batch-size",
         type=int,
         default=0,
-        help="Number of worker processes (0 = auto-detect CPU count, 1 = sequential)",
+        help="Number of parallel simulations per batch (0 = auto-detect)",
     )
 
     parser.add_argument(
@@ -1648,10 +1295,7 @@ def main() -> int:
                 condition_func, condition_desc = parse_search_condition(args.search)
                 # Parse condition type and value for parallel search
                 condition_type, value_str = args.search.split(":", 1)
-                if condition_type == "bounding_box_size":
-                    width_str, height_str = value_str.split("x")
-                    condition_value = (int(width_str), int(height_str))
-                elif condition_type == "any_cycle_excluding":
+                if condition_type == "any_cycle_excluding":
                     # Parse comma-separated list of cycle lengths to exclude
                     condition_value = [int(x.strip()) for x in value_str.split(",")]
                 elif condition_type == "composite":
@@ -1674,22 +1318,10 @@ def main() -> int:
                 print(f"Error: {e}")
                 return 1
 
-            # Determine number of workers
-            if args.workers == 0:
-                # Auto-detect: use parallel for large searches, sequential for small ones
-                workers = mp.cpu_count() if args.search_attempts >= 100 else 1
-            else:
-                workers = args.workers
-
-            # Start overall timing (includes process startup/shutdown overhead)
+            # Start overall timing
             overall_start_time = time.time()
 
-            if workers > 1:
-                print(f"Using {workers} workers (batched work stealing)")
-            else:
-                print(f"Sequential search: {args.search_attempts} attempts")
-
-            # Always use parallel search method (handles workers=1 for sequential)
+            # Use tensor-based parallel search
             found, attempts, result, end_state_stats = cli.parallel_search_for_condition(
                 width=args.width,
                 height=args.height,
@@ -1706,7 +1338,8 @@ def main() -> int:
                 verbose=args.verbose,
                 seed=args.search_seed,
                 save_pattern=args.save_pattern,
-                workers=workers,
+                device=args.device,
+                batch_size=args.batch_size,
                 continue_search=args.continue_search,
             )
 

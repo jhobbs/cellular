@@ -215,6 +215,7 @@ class GameOfLife:
             "grid_width": self.grid.width,
             "grid_height": self.grid.height,
             "wrap_edges": self.grid.wrap_edges,
+            "topology": self.grid.topology,
             "population_history": list(self._population_history),
             "cycle_detected": self._cycle_detected,
             "cycle_length": self._cycle_length,

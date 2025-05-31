@@ -16,6 +16,7 @@ from datetime import datetime
 from ..core.grid import Grid
 from ..core.game import GameOfLife
 from ..core.patterns import PatternLibrary, Pattern
+from ..core.bulk_runner import BulkSimulationRunner, SimulationConfig
 
 
 def _search_worker_batched(args_tuple):
@@ -40,6 +41,7 @@ def _search_worker_batched(args_tuple):
         progress_lock,
         continue_search,
         found_patterns_queue,
+        topology,
     ) = args_tuple
 
     # Create local pattern library for this worker
@@ -84,7 +86,7 @@ def _search_worker_batched(args_tuple):
 
                 try:
                     # Create grid and game
-                    grid = Grid(width, height, wrap_edges=toroidal)
+                    grid = Grid(width, height, wrap_edges=toroidal, topology=topology)
                     game = GameOfLife(grid)
 
                     # Set up initial state
@@ -218,6 +220,7 @@ class CLIGameOfLife:
         verbose: bool = False,
         show_grid: bool = False,
         return_initial_grid: bool = False,
+        topology: Optional[str] = None,
     ) -> Tuple[int, str, dict, Optional[Grid]]:
         """Run a Game of Life simulation.
 
@@ -225,23 +228,25 @@ class CLIGameOfLife:
             width: Grid width
             height: Grid height
             population_rate: Initial random population rate (0.0-1.0)
-            toroidal: Whether grid edges wrap around
+            toroidal: DEPRECATED - use topology instead
             max_generations: Maximum generations to run
             pattern: Optional pattern name to load
             pattern_x: X offset for pattern placement
             pattern_y: Y offset for pattern placement
             verbose: Print progress updates
             show_grid: Show initial and final grid states
+            topology: Grid edge topology ("toroidal", "bounded", "mirroring")
 
         Returns:
             Tuple of (final_generation, finish_reason, statistics)
         """
         # Create grid and game
-        grid = Grid(width, height, wrap_edges=toroidal)
+        grid = Grid(width, height, wrap_edges=toroidal, topology=topology)
         game = GameOfLife(grid)
 
         if verbose:
-            print(f"Initializing {width}x{height} grid (toroidal: {toroidal})")
+            actual_topology = topology if topology else ("toroidal" if toroidal else "bounded")
+            print(f"Initializing {width}x{height} grid (topology: {actual_topology})")
 
         # Set up initial state
         if pattern:
@@ -265,7 +270,7 @@ class CLIGameOfLife:
         # Save initial grid state if requested
         initial_grid_copy = None
         if return_initial_grid:
-            initial_grid_copy = Grid(width, height, wrap_edges=toroidal)
+            initial_grid_copy = Grid(width, height, wrap_edges=toroidal, topology=topology)
             for x in range(width):
                 for y in range(height):
                     if grid.get_cell(x, y):
@@ -324,6 +329,7 @@ class CLIGameOfLife:
         workers: int = 0,
         batch_size: int = 0,
         continue_search: bool = False,
+        topology: Optional[str] = None,
     ):
         """Search for patterns using batched parallel processing with work stealing."""
         if workers <= 0:
@@ -341,7 +347,8 @@ class CLIGameOfLife:
         if verbose:
             print(f"Batched parallel search using {workers} workers")
             print(f"Searching for condition: {condition_name}")
-            print(f"Grid: {width}x{height} (toroidal: {toroidal})")
+            actual_topology = topology if topology else ("toroidal" if toroidal else "bounded")
+            print(f"Grid: {width}x{height} (topology: {actual_topology})")
             print(f"Max attempts: {max_attempts} (rounded up to {actual_max_attempts} for batching)")
             print(f"Max generations per attempt: {max_generations}")
             print(f"Batch size: {batch_size} attempts/batch ({total_batches} total batches)")
@@ -381,6 +388,7 @@ class CLIGameOfLife:
                     progress_lock,
                     continue_search,
                     found_patterns_queue,
+                    topology,
                 )
                 worker_args.append(args)
 
@@ -472,6 +480,7 @@ class CLIGameOfLife:
                                         pattern_x,
                                         pattern_y,
                                         seed,
+                                        topology,
                                     )
                                     if saved_file:
                                         # Always print when saving, include relevant details
@@ -570,6 +579,7 @@ class CLIGameOfLife:
                                     pattern_x,
                                     pattern_y,
                                     seed,
+                                    topology,
                                 )
 
                             success_result = (True, attempt, (final_gen, reason, stats, saved_file))
@@ -623,6 +633,7 @@ class CLIGameOfLife:
                                         pattern_x,
                                         pattern_y,
                                         seed,
+                                        topology,
                                         )
                                         if saved_file:
                                             # Always print when saving, include relevant details
@@ -728,6 +739,7 @@ class CLIGameOfLife:
         pattern_x: int = 0,
         pattern_y: int = 0,
         seed: Optional[int] = None,
+        topology: Optional[str] = None,
     ) -> Optional[str]:
         """Save a successful pattern to file.
 
@@ -800,6 +812,7 @@ class CLIGameOfLife:
                     "width": width,
                     "height": height,
                     "toroidal": toroidal,
+                    "topology": topology if topology else ("toroidal" if toroidal else "bounded"),
                     "population_rate": population_rate,
                     "max_generations": max_generations,
                     "pattern": pattern,
@@ -809,7 +822,7 @@ class CLIGameOfLife:
                 },
                 "statistics": stats,
                 "reload_command": self._generate_reload_command(
-                    pattern, width, height, toroidal, population_rate, max_generations, pattern_x, pattern_y, seed
+                    pattern, width, height, toroidal, population_rate, max_generations, pattern_x, pattern_y, seed, topology
                 ),
             }
 
@@ -837,6 +850,7 @@ class CLIGameOfLife:
         pattern_x: int = 0,
         pattern_y: int = 0,
         seed: Optional[int] = None,
+        topology: Optional[str] = None,
     ) -> str:
         """Generate a command line to reload this exact simulation configuration."""
         cmd_parts = ["cellular-cli"]
@@ -844,7 +858,9 @@ class CLIGameOfLife:
         # Grid parameters
         cmd_parts.append(f"--width {width}")
         cmd_parts.append(f"--height {height}")
-        if toroidal:
+        if topology:
+            cmd_parts.append(f"--topology {topology}")
+        elif toroidal:
             cmd_parts.append("--toroidal")
 
         # Pattern or population
@@ -1281,6 +1297,12 @@ Examples:
 
   # Search using 4 workers (parallel)
   cellular-cli --search cycle_length:3 --workers 4
+  
+  # Run 1000 bulk simulations with metrics collection
+  cellular-cli --bulk 1000 --bulk-export results
+  
+  # Parameter sweep: test different population rates and grid sizes
+  cellular-cli --bulk 100 --param-sweep 'population=0.1,0.2,0.3' --param-sweep 'width=50,100' --bulk-export sweep_results
 
   # Force sequential search
   cellular-cli --search cycle_length:3 --workers 1
@@ -1313,7 +1335,15 @@ Examples:
         "-t",
         "--toroidal",
         action="store_true",
-        help="Enable toroidal (wraparound) edges",
+        help="Enable toroidal (wraparound) edges (deprecated, use --topology instead)",
+    )
+    
+    parser.add_argument(
+        "--topology",
+        type=str,
+        choices=["toroidal", "bounded", "mirroring"],
+        default=None,
+        help="Grid edge topology: toroidal (wrap), bounded (dead outside), or mirroring (reflect)",
     )
 
     # Pattern configuration
@@ -1404,6 +1434,42 @@ Examples:
         "--continue-search",
         action="store_true",
         help="Continue searching through all max attempts even after finding matches (saves all found patterns)",
+    )
+    
+    # Bulk simulation arguments
+    parser.add_argument(
+        "--bulk",
+        type=int,
+        metavar="N",
+        help="Run N bulk simulations and collect metrics",
+    )
+    
+    parser.add_argument(
+        "--bulk-export",
+        type=str,
+        metavar="FILENAME",
+        help="Base filename for bulk simulation results (exports .json, .csv, and _summary.csv)",
+    )
+    
+    parser.add_argument(
+        "--param-sweep",
+        type=str,
+        metavar="PARAM=VALUES",
+        action="append",
+        help="Parameter sweep for bulk simulations (e.g., --param-sweep 'population=0.1,0.2,0.3' --param-sweep 'width=50,100')",
+    )
+    
+    parser.add_argument(
+        "--runs-per-combo",
+        type=int,
+        default=10,
+        help="Number of runs per parameter combination in sweep mode (default: 10)",
+    )
+    
+    parser.add_argument(
+        "--seed",
+        type=int,
+        help="Random seed for reproducible simulations",
     )
 
     return parser
@@ -1622,8 +1688,11 @@ def main() -> int:
                 args.width = sim_params.get("width", args.width)
             if not any("--height" in arg or "-H" in arg for arg in sys.argv):
                 args.height = sim_params.get("height", args.height)
-            if not any("--toroidal" in arg or "-t" in arg for arg in sys.argv):
+            if not any("--toroidal" in arg or "-t" in arg for arg in sys.argv) and not any("--topology" in arg for arg in sys.argv):
                 args.toroidal = sim_params.get("toroidal", args.toroidal)
+                # Also check for saved topology
+                if "topology" in sim_params and not args.topology:
+                    topology = sim_params["topology"]
 
             if args.verbose:
                 print("Using found pattern's original parameters:")
@@ -1641,6 +1710,16 @@ def main() -> int:
             if args.verbose:
                 print(f"Auto-centering pattern at ({args.pattern_x}, {args.pattern_y})")
 
+    # Handle topology parameter - determine which topology to use
+    if args.topology:
+        # New topology parameter takes precedence
+        topology = args.topology
+        # Update toroidal flag for backward compatibility
+        args.toroidal = (topology == "toroidal")
+    else:
+        # Use deprecated toroidal flag for backward compatibility
+        topology = "toroidal" if args.toroidal else "bounded"
+    
     try:
         # Handle search mode
         if args.search:
@@ -1708,6 +1787,7 @@ def main() -> int:
                 save_pattern=args.save_pattern,
                 workers=workers,
                 continue_search=args.continue_search,
+                topology=topology,
             )
 
             # Calculate overall runtime including overhead
@@ -1812,6 +1892,96 @@ def main() -> int:
                 print_end_state_statistics(end_state_stats, args.verbose)
                 return 1
 
+        # Handle bulk simulations
+        elif args.bulk:
+            # Create base configuration
+            config = SimulationConfig(
+                width=args.width,
+                height=args.height,
+                toroidal=args.toroidal,
+                topology=topology,
+                max_generations=args.max_generations,
+                population_rate=args.population,
+                pattern=args.pattern,
+                pattern_x=args.pattern_x,
+                pattern_y=args.pattern_y,
+                seed=args.seed,
+            )
+            
+            # Create bulk runner
+            workers = args.workers if args.workers > 0 else None
+            runner = BulkSimulationRunner(
+                base_config=config,
+                num_runs=args.bulk,
+                parallel=(workers != 1),
+                workers=workers,
+                verbose=args.verbose,
+            )
+            
+            # Handle parameter sweeps if specified
+            if args.param_sweep:
+                # Parse parameter sweep specifications
+                param_ranges = {}
+                for sweep_spec in args.param_sweep:
+                    if '=' not in sweep_spec:
+                        print(f"Error: Invalid parameter sweep format: '{sweep_spec}'")
+                        print("Expected format: PARAM=VALUE1,VALUE2,VALUE3")
+                        return 1
+                    
+                    param_name, values_str = sweep_spec.split('=', 1)
+                    param_name = param_name.strip()
+                    
+                    # Parse values based on parameter type
+                    try:
+                        if param_name in ['width', 'height', 'max_generations']:
+                            # Integer parameters
+                            values = [int(v.strip()) for v in values_str.split(',')]
+                        elif param_name in ['population_rate', 'population']:
+                            # Float parameters
+                            values = [float(v.strip()) for v in values_str.split(',')]
+                        elif param_name in ['toroidal']:
+                            # Boolean parameters
+                            values = [v.strip().lower() == 'true' for v in values_str.split(',')]
+                        elif param_name in ['topology', 'pattern']:
+                            # String parameters
+                            values = [v.strip() for v in values_str.split(',')]
+                        else:
+                            print(f"Error: Unknown parameter '{param_name}'")
+                            print("Valid parameters: width, height, population_rate, toroidal, topology, max_generations, pattern")
+                            return 1
+                        
+                        # Handle population vs population_rate
+                        if param_name == 'population':
+                            param_name = 'population_rate'
+                        
+                        param_ranges[param_name] = values
+                        
+                    except ValueError as e:
+                        print(f"Error parsing values for parameter '{param_name}': {e}")
+                        return 1
+                
+                print(f"\nRunning parameter sweep:")
+                for param, values in param_ranges.items():
+                    print(f"  {param}: {values}")
+                print(f"  Runs per combination: {args.runs_per_combo}")
+                print()
+                
+                # Run parameter sweep
+                all_metrics = runner.run_with_parameter_sweep(param_ranges, args.runs_per_combo)
+            else:
+                # Run standard bulk simulations
+                print(f"\nRunning {args.bulk} bulk simulations...")
+                all_metrics = runner.run()
+            
+            # Print summary
+            runner.print_summary()
+            
+            # Export results if requested
+            if args.bulk_export:
+                runner.export_results(args.bulk_export)
+            
+            return 0
+            
         else:
             # Run single simulation
             final_generation, reason, stats = cli.run_simulation(
@@ -1825,6 +1995,7 @@ def main() -> int:
                 pattern_y=args.pattern_y,
                 verbose=args.verbose,
                 show_grid=args.show_grid,
+                topology=topology,
             )
 
             # Display results

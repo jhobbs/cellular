@@ -2,6 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Claude Code Tool Configuration
+
+The following tools should be enabled for this project:
+- Task
+- Bash
+- Glob
+- Grep
+- LS
+- Read
+- Edit
+- MultiEdit
+- Write
+- NotebookRead
+- NotebookEdit
+- WebFetch
+- TodoRead
+- TodoWrite
+- WebSearch
+
 ## Overview
 
 This repository contains a modular Python package for Conway's Game of Life with multiple frontend interfaces. The implementation focuses on performance optimization through vectorized operations, efficient rendering, and comprehensive pattern searching capabilities.

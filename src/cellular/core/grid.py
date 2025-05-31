@@ -1,6 +1,6 @@
 """Grid data structure for cellular automata."""
 
-from typing import Tuple, Iterator, Optional
+from typing import Tuple, Iterator, Optional, Literal
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -10,20 +10,32 @@ class Grid:
     """Represents a 2D grid for cellular automata.
 
     The grid uses numpy arrays for efficient operations and supports
-    both wraparound and bounded edge behavior.
+    multiple edge topologies: toroidal (wraparound), bounded (dead cells
+    outside), and mirroring (reflective boundaries).
     """
 
-    def __init__(self, width: int, height: int, wrap_edges: bool = True) -> None:
+    def __init__(self, width: int, height: int, wrap_edges: bool = True, 
+                 topology: Optional[Literal["toroidal", "bounded", "mirroring"]] = None) -> None:
         """Initialize a new grid.
 
         Args:
             width: Number of columns
             height: Number of rows
-            wrap_edges: Whether edges wrap around (toroidal topology)
+            wrap_edges: DEPRECATED - use topology parameter instead
+            topology: Edge behavior - "toroidal" (wrap), "bounded" (dead outside), 
+                     or "mirroring" (reflect)
         """
         self.width = width
         self.height = height
-        self.wrap_edges = wrap_edges
+        
+        # Handle backward compatibility with wrap_edges parameter
+        if topology is None:
+            self.topology = "toroidal" if wrap_edges else "bounded"
+        else:
+            self.topology = topology
+            
+        # Keep wrap_edges for backward compatibility
+        self.wrap_edges = self.topology == "toroidal"
         self._cells = np.zeros((width, height), dtype=np.int8)
         self._previous_cells = np.zeros((width, height), dtype=np.int8)
 
@@ -63,13 +75,30 @@ class Grid:
             True if cell is alive, False if dead
 
         Raises:
-            IndexError: If coordinates are out of bounds and wrap_edges is False
+            IndexError: If coordinates are out of bounds and topology is not "toroidal"
         """
-        if self.wrap_edges:
+        if self.topology == "toroidal":
             x = x % self.width
             y = y % self.height
+        elif self.topology == "mirroring":
+            # Mirror coordinates if out of bounds
+            if x < 0:
+                x = -x - 1
+            elif x >= self.width:
+                x = 2 * self.width - x - 1
+            if y < 0:
+                y = -y - 1
+            elif y >= self.height:
+                y = 2 * self.height - y - 1
+                
+            # If still out of bounds after mirroring, it's on a corner
+            if not (0 <= x < self.width and 0 <= y < self.height):
+                return False
         elif not (0 <= x < self.width and 0 <= y < self.height):
-            raise IndexError(f"Coordinates ({x}, {y}) out of bounds")
+            if self.topology == "bounded":
+                return False
+            else:
+                raise IndexError(f"Coordinates ({x}, {y}) out of bounds")
 
         return bool(self._cells[x, y])
 
@@ -82,9 +111,9 @@ class Grid:
             alive: Whether the cell should be alive
 
         Raises:
-            IndexError: If coordinates are out of bounds and wrap_edges is False
+            IndexError: If coordinates are out of bounds
         """
-        if self.wrap_edges:
+        if self.topology == "toroidal":
             x = x % self.width
             y = y % self.height
         elif not (0 <= x < self.width and 0 <= y < self.height):
@@ -173,10 +202,24 @@ class Grid:
 
                 nx, ny = x + dx, y + dy
 
-                if self.wrap_edges:
+                if self.topology == "toroidal":
                     nx = nx % self.width
                     ny = ny % self.height
                     count += self._cells[nx, ny]
+                elif self.topology == "mirroring":
+                    # Mirror coordinates if out of bounds
+                    if nx < 0:
+                        nx = -nx - 1
+                    elif nx >= self.width:
+                        nx = 2 * self.width - nx - 1
+                    if ny < 0:
+                        ny = -ny - 1
+                    elif ny >= self.height:
+                        ny = 2 * self.height - ny - 1
+                        
+                    # Check if mirrored position is valid
+                    if 0 <= nx < self.width and 0 <= ny < self.height:
+                        count += self._cells[nx, ny]
                 elif 0 <= nx < self.width and 0 <= ny < self.height:
                     count += self._cells[nx, ny]
 
@@ -192,13 +235,17 @@ class Grid:
         # Grid uses (width, height) but PyTorch expects (height, width), so transpose
         self._torch_input[0, 0] = torch.from_numpy((self._cells.T > 0).astype(np.float32))
 
-        if self.wrap_edges:
+        if self.topology == "toroidal":
             # For toroidal topology, use circular padding
             padded = F.pad(self._torch_input, (1, 1, 1, 1), mode="circular")
             neighbors = F.conv2d(padded, self._torch_kernel)
-        else:
+        elif self.topology == "bounded":
             # For bounded topology, use zero padding
             neighbors = F.conv2d(self._torch_input, self._torch_kernel, padding=1)
+        else:  # mirroring
+            # For mirroring topology, use reflect padding
+            padded = F.pad(self._torch_input, (1, 1, 1, 1), mode="reflect")
+            neighbors = F.conv2d(padded, self._torch_kernel)
 
         # Convert back to numpy and transpose back to (width, height)
         return neighbors[0, 0].numpy().astype(np.int8).T
@@ -247,7 +294,7 @@ class Grid:
             return False
         return (
             self.shape == other.shape
-            and self.wrap_edges == other.wrap_edges
+            and self.topology == other.topology
             and np.array_equal(self._cells, other._cells)
         )
 

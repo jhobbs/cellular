@@ -33,7 +33,7 @@ class TkinterGameOfLifeGUI:
         self.rows = self.canvas_height // self.cell_size
 
         # Initialize core components
-        self.grid = Grid(self.cols, self.rows, wrap_edges=True)
+        self.grid = Grid(self.cols, self.rows, topology="toroidal")
         self.game = GameOfLife(self.grid)
         self.pattern_library = PatternLibrary()
 
@@ -150,7 +150,7 @@ class TkinterGameOfLifeGUI:
         )
         self.speed_btn.pack(side=tk.LEFT, padx=3)
 
-        # Toroidal toggle button
+        # Topology cycle button
         self.topology_btn = tk.Button(
             parent,
             text="Toroidal",
@@ -162,10 +162,12 @@ class TkinterGameOfLifeGUI:
         self.topology_btn.pack(side=tk.LEFT, padx=3)
 
         # Set initial button state based on grid topology
-        if self.grid.wrap_edges:
+        if self.grid.topology == "toroidal":
             self.topology_btn.config(bg="#228B22", text="Toroidal")
-        else:
+        elif self.grid.topology == "bounded":
             self.topology_btn.config(bg="#666666", text="Bounded")
+        else:  # mirroring
+            self.topology_btn.config(bg="#4169E1", text="Mirroring")
 
     def _create_canvas(self, parent: tk.Frame) -> None:
         """Create the game canvas."""
@@ -394,24 +396,46 @@ class TkinterGameOfLifeGUI:
             self.speed_btn.config(text="Speed Mode", bg="#800080")
 
     def toggle_topology(self) -> None:
-        """Toggle between toroidal and bounded topology."""
+        """Cycle through toroidal, bounded, and mirroring topologies."""
         # Stop simulation during topology change
         was_running = self.running
         self.running = False
 
-        # Toggle topology
-        self.grid.wrap_edges = not self.grid.wrap_edges
+        # Cycle through topologies
+        current_topology = self.grid.topology
+        if current_topology == "toroidal":
+            new_topology = "bounded"
+        elif current_topology == "bounded":
+            new_topology = "mirroring"
+        else:  # mirroring
+            new_topology = "toroidal"
+        
+        # Create new grid with same dimensions but new topology
+        new_grid = Grid(self.cols, self.rows, topology=new_topology)
+        
+        # Copy current cell states
+        new_grid.cells[:] = self.grid.cells[:]
+        
+        # Replace grid
+        self.grid = new_grid
+        self.game.grid = new_grid
+        
+        # Clear cycle detection since topology changed
+        self.game.clear_cycle_detection()
 
         # Update button appearance
-        if self.grid.wrap_edges:
+        if new_topology == "toroidal":
             self.topology_btn.config(bg="#228B22", text="Toroidal")
-        else:
+        elif new_topology == "bounded":
             self.topology_btn.config(bg="#666666", text="Bounded")
+        else:  # mirroring
+            self.topology_btn.config(bg="#4169E1", text="Mirroring")
 
         # Update window title
         title = f"Conway's Game of Life - {self.cols}x{self.rows}"
-        if self.grid.wrap_edges:
-            title += " (Toroidal)"
+        if self.loaded_pattern_name:
+            title = f"Conway's Game of Life - {self.loaded_pattern_name}"
+        title += f" ({new_topology.capitalize()})"
         self.master.title(title)
 
         # Restart simulation if it was running
@@ -531,8 +555,9 @@ class TkinterGameOfLifeGUI:
         speed_color = "#FF4500" if self.speed_mode else "#FFFFFF"
 
         # Format topology status
-        topology_status = "Toroidal" if self.grid.wrap_edges else "Bounded"
-        topology_color = "#90EE90" if self.grid.wrap_edges else "#FFFFFF"
+        topology_status = self.grid.topology.capitalize()
+        topology_colors = {"toroidal": "#90EE90", "bounded": "#FFFFFF", "mirroring": "#87CEEB"}
+        topology_color = topology_colors.get(self.grid.topology, "#FFFFFF")
 
         # Update display
         display_stats = {
@@ -850,13 +875,15 @@ class TkinterGameOfLifeGUI:
         sim_params = pattern.simulation_params
         new_width = sim_params.get("width", self.cols)
         new_height = sim_params.get("height", self.rows)
-        new_toroidal = sim_params.get("toroidal", True)
 
-        # Only resize if different from current grid
-        if new_width != self.cols or new_height != self.rows or new_toroidal != self.grid.wrap_edges:
+        # Only resize if different from current grid dimensions
+        if new_width != self.cols or new_height != self.rows:
 
             # Stop simulation
             self.running = False
+
+            # Preserve current topology
+            current_topology = self.grid.topology
 
             # Update grid dimensions
             self.cols = new_width
@@ -876,8 +903,8 @@ class TkinterGameOfLifeGUI:
             self.canvas_width = new_width * self.cell_size
             self.canvas_height = new_height * self.cell_size
 
-            # Create new grid and game
-            self.grid = Grid(new_width, new_height, wrap_edges=new_toroidal)
+            # Create new grid and game with preserved topology
+            self.grid = Grid(new_width, new_height, topology=current_topology)
             self.game = GameOfLife(self.grid)
 
             # Resize canvas
@@ -888,10 +915,8 @@ class TkinterGameOfLifeGUI:
             self.cell_objects = {}
             self.redraw_all_cells()
 
-            # Update window title with grid info and simulation parameters
-            title = f"Conway's Game of Life - {new_width}x{new_height}"
-            if new_toroidal:
-                title += " (Toroidal)"
+            # Update window title with grid info and current topology
+            title = f"Conway's Game of Life - {new_width}x{new_height} ({current_topology.capitalize()})"
 
             # Add additional simulation info if available
             if hasattr(pattern, "simulation_params") and pattern.simulation_params:

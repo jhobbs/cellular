@@ -1978,7 +1978,9 @@ def main() -> int:
             
             # Export results if requested
             if args.bulk_export:
-                runner.export_results(args.bulk_export)
+                output_dir = runner.export_results(args.bulk_export)
+                print(f"\nTo visualize results, run:")
+                print(f"  python visualize_results.py {output_dir}/{args.bulk_export}.json")
             
             return 0
             

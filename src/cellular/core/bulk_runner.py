@@ -12,7 +12,7 @@ import sys
 from .grid import Grid
 from .game import GameOfLife
 from .patterns import PatternLibrary, Pattern
-from .metrics import MetricsCollector, MetricsAggregator, MetricsExporter, SimulationMetrics
+from .metrics import MetricsCollector, MetricsAggregator, MetricsExporter, SimulationMetrics, NumpyEncoder
 
 
 @dataclass
@@ -250,23 +250,62 @@ class BulkSimulationRunner:
         """Get summary statistics for all runs."""
         return self.aggregator.get_summary_statistics()
     
-    def export_results(self, base_filename: str = "simulation_results"):
-        """Export results to JSON and CSV formats."""
+    def export_results(self, base_filename: str = "simulation_results", 
+                      results_dir: str = "results"):
+        """Export results to JSON and CSV formats in organized directory.
+        
+        Args:
+            base_filename: Base name for output files
+            results_dir: Directory to store results (created if doesn't exist)
+        """
+        from pathlib import Path
+        from datetime import datetime
+        
+        # Create results directory if it doesn't exist
+        results_path = Path(results_dir)
+        results_path.mkdir(exist_ok=True)
+        
+        # Create timestamp subdirectory
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = results_path / f"{base_filename}_{timestamp}"
+        run_dir.mkdir(exist_ok=True)
+        
         # Get all metrics
         all_metrics = list(self.aggregator.runs)
         
         # Export detailed results
-        MetricsExporter.to_json(all_metrics, f"{base_filename}.json")
-        MetricsExporter.to_csv(all_metrics, f"{base_filename}.csv")
+        json_path = run_dir / f"{base_filename}.json"
+        csv_path = run_dir / f"{base_filename}.csv"
+        summary_path = run_dir / f"{base_filename}_summary.csv"
         
-        # Export summary
-        MetricsExporter.to_summary_csv(self.aggregator, f"{base_filename}_summary.csv")
+        MetricsExporter.to_json(all_metrics, str(json_path))
+        MetricsExporter.to_csv(all_metrics, str(csv_path))
+        MetricsExporter.to_summary_csv(self.aggregator, str(summary_path))
+        
+        # Create a metadata file with run information
+        metadata = {
+            "timestamp": timestamp,
+            "base_config": vars(self.base_config),
+            "num_runs": self.num_runs,
+            "parallel": self.parallel,
+            "workers": self.workers,
+            "total_runs_completed": len(all_metrics),
+            "summary": self.aggregator.get_summary_statistics()
+        }
+        
+        metadata_path = run_dir / "metadata.json"
+        with open(metadata_path, 'w') as f:
+            import json
+            json.dump(metadata, f, indent=2, cls=NumpyEncoder)
         
         if self.verbose:
-            print(f"\nResults exported to:")
-            print(f"  - {base_filename}.json")
-            print(f"  - {base_filename}.csv")
-            print(f"  - {base_filename}_summary.csv")
+            print(f"\nResults exported to: {run_dir}/")
+            print(f"  - {base_filename}.json (full data)")
+            print(f"  - {base_filename}.csv (tabular data)")
+            print(f"  - {base_filename}_summary.csv (aggregate stats)")
+            print(f"  - metadata.json (run configuration)")
+            
+        return str(run_dir)
     
     def print_summary(self):
         """Print summary statistics to console."""
